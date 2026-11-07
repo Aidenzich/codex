@@ -69,7 +69,10 @@ persistent scheduler: they do not survive session teardown or process restart.
 ## Verification
 
 Build with the repository's pinned Rust toolchain, Cargo and Git available on
-`PATH`. The existing `dev-small` profile keeps debug artifacts small and disables
+`PATH`, plus Python 3.11 or newer (an existing uv-managed interpreter also works).
+The build command reuses the repository's checksum-verified Codex V8 package
+artifacts for the native code-mode host. The existing `dev-small` profile keeps
+debug artifacts small and disables
 incremental object caches for bounded verification disk use. Cargo uses Git's
 native transport for pinned Git sources and recursive submodules; no global Git
 or Cargo configuration is required.
@@ -93,8 +96,8 @@ installed CLI, global configuration or existing conversation history.
 To reproduce with the candidate checkout:
 
 ```sh
+python3 scripts/wakeup_build.py -- cargo build --locked --profile dev-small -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host
 cd codex-rs
-cargo build --locked --profile dev-small -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --lib wakeup
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --test all suite::wakeup::
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-tui --lib wakeup
