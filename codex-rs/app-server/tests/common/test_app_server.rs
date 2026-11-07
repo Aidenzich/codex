@@ -244,6 +244,11 @@ impl TestAppServer {
         })
     }
 
+    /// Snapshot structured stderr events captured by `with_json_logging`.
+    pub fn json_log_events(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.json_logs.events()
+    }
+
     /// Waits up to `timeout` for a JSON stderr event whose structured `event.name` field matches.
     pub async fn wait_for_json_log_event(
         &self,

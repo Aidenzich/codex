@@ -125,6 +125,11 @@ pub(in crate::local) async fn list_turns(
         params.items_view,
     )
     .await?;
+    tracing::debug!(
+        event.name = "thread_history_turn_page_read",
+        rows = page.rows.len(),
+        lineage_segments = lineage.segments().len()
+    );
     let mut turns = Vec::with_capacity(page.rows.len());
     for turn in page.rows {
         let items = match params.items_view {

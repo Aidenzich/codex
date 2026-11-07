@@ -1388,8 +1388,11 @@ mod reader {
             .unwrap_or_else(|| path.to_path_buf());
         if path::is_compressed_rollout_path(path.as_path()) {
             metrics.format = "zstd";
+            let span = tracing::Span::current();
             let reader = tokio::task::spawn_blocking(move || {
+                let _entered = span.enter();
                 let input = File::open(path.as_path())?;
+                tracing::debug!(event.name = "rollout_reader_opened", format = "zstd");
                 let decoder = super::read_diagnostics::DiagnosticDecoder::new(input)?;
                 Ok::<_, io::Error>(
                     io::BufReader::new(Box::new(decoder) as Box<dyn Read + Send>).lines(),
@@ -1402,6 +1405,7 @@ mod reader {
         }
         metrics.format = "plain";
         let file = tokio::fs::File::open(path).await?;
+        tracing::debug!(event.name = "rollout_reader_opened", format = "plain");
         Ok(RolloutLineReaderInner::Plain(
             tokio::io::BufReader::new(file).lines(),
         ))

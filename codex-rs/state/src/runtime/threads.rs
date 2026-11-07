@@ -67,6 +67,10 @@ WHERE threads.id = ?
         .bind(id.to_string())
         .fetch_optional(self.pool.as_ref())
         .await?;
+        tracing::debug!(
+            event.name = "state_thread_query_completed",
+            operation = "get_thread"
+        );
         row.map(|row| ThreadRow::try_from_row(&row).and_then(ThreadMetadata::try_from))
             .transpose()
     }
@@ -419,6 +423,10 @@ ON CONFLICT(child_thread_id) DO NOTHING
             None => {}
         }
         let row = builder.build().fetch_optional(self.pool.as_ref()).await?;
+        tracing::debug!(
+            event.name = "state_thread_query_completed",
+            operation = "find_rollout_path_by_id"
+        );
         Ok(row
             .and_then(|r| r.try_get::<String, _>("rollout_path").ok())
             .map(PathBuf::from))

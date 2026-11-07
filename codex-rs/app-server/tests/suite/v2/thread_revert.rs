@@ -54,8 +54,12 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[test_case::test_case(1; "one_retained_turn")]
+#[test_case::test_case(101; "cross_page_oldest_origin")]
 #[tokio::test]
-async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> Result<()> {
+async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin(
+    retained_turns: usize,
+) -> Result<()> {
     use serde_json::json;
     use std::time::Duration;
 
@@ -72,33 +76,37 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> 
         ])
     }
     let model = responses::start_mock_server().await;
-    let mock = responses::mount_sse_sequence(
-        &model,
-        vec![
-            call(
-                "keep",
-                "schedule_wakeup",
-                json!({"duration_ms":5000,"instruction":"retained ORCHID"}),
-            ),
-            answer("scheduled-a"),
-            call(
-                "discard",
-                "schedule_wakeup",
-                json!({"duration_ms":5000,"instruction":"reverted LOTUS"}),
-            ),
-            answer("scheduled-b"),
-            call("list", "list_wakeups", json!({})),
-            answer("listed"),
-            answer("autonomous"),
-        ],
-    )
-    .await;
+    let delay_ms = 30_000;
+    let mut sequence = vec![
+        call(
+            "keep",
+            "schedule_wakeup",
+            json!({"duration_ms":delay_ms,"instruction":"retained ORCHID"}),
+        ),
+        answer("scheduled-a"),
+    ];
+    sequence.extend((1..retained_turns).map(|_| answer("retained-padding")));
+    sequence.extend([
+        call(
+            "discard",
+            "schedule_wakeup",
+            json!({"duration_ms":delay_ms,"instruction":"reverted LOTUS"}),
+        ),
+        answer("scheduled-b"),
+        call("list", "list_wakeups", json!({})),
+        answer("listed"),
+        answer("autonomous"),
+    ]);
+    let mock = responses::mount_sse_sequence(&model, sequence).await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&model.uri())
         .enable_feature(Feature::Sqlite)
         .write(codex_home.path())?;
     let mut app = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .with_json_logging(
+            "warn,codex_app_server::request_processors::thread_processor=debug,codex_thread_store::local::thread_history=debug,codex_rollout::compression=debug,codex_state::runtime::threads=debug",
+        )
         .build()
         .await?;
     initialize_experimental(&mut app).await?;
@@ -120,6 +128,10 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> 
     let first = app
         .start_turn_and_wait_for_completion(input("Schedule retained ORCHID"))
         .await?;
+    for _ in 1..retained_turns {
+        app.start_turn_and_wait_for_completion(input("Retained padding turn"))
+            .await?;
+    }
     let second = app
         .start_turn_and_wait_for_completion(input("Schedule reverted LOTUS"))
         .await?;
@@ -137,7 +149,7 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> 
         .await?;
     // Completion notifications contain a summary, not the full turn transcript.
     let notification = timeout(
-        DEFAULT_READ_TIMEOUT,
+        Duration::from_secs(45),
         app.read_stream_until_matching_notification("native wakeup item", |notification| {
             notification.method == "item/completed"
                 && notification
@@ -209,8 +221,81 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> 
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(
         mock.requests().len(),
-        7,
+        retained_turns + 6,
         "one autonomous claim, no reverted-origin claim"
+    );
+    let events = app.json_log_events()?;
+    let scan_events: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event["spans"].as_array().is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|span| span["name"] == "wakeup_origin_scan")
+            })
+        })
+        .collect();
+    let count = |name: &str| {
+        scan_events
+            .iter()
+            .filter(|event| event["fields"]["event.name"] == name)
+            .count()
+    };
+    let pages = retained_turns.div_ceil(100);
+    assert_eq!(
+        count("wakeup_origin_scan_completed"),
+        1,
+        "one isolated origin scan: {scan_events:?}"
+    );
+    assert_eq!(
+        count("thread_history_turn_page_read"),
+        pages,
+        "one store page operation per chunk: {scan_events:?}"
+    );
+    // Revert creates an empty replacement rollout and one retained ancestor.
+    // Each page validates metadata and resolves the current rollout once. Its
+    // header is opened by resolution, then each of the two lineage headers is
+    // opened. The first page queries the empty leaf and retained ancestor;
+    // a subsequent cursor starts directly in that ancestor.
+    assert_eq!(
+        count("state_thread_query_completed"),
+        pages * 2,
+        "actual metadata SQL queries per page: {scan_events:?}"
+    );
+    assert_eq!(
+        count("thread_history_turn_query_completed"),
+        pages + 1,
+        "actual SQL queries for first and subsequent lineage pages: {scan_events:?}"
+    );
+    assert_eq!(
+        count("rollout_reader_opened"),
+        pages * 3,
+        "actual current and lineage header opens per page: {scan_events:?}"
+    );
+    for event in scan_events
+        .iter()
+        .filter(|event| event["fields"]["event.name"] == "thread_history_turn_page_read")
+    {
+        assert_eq!(
+            event["fields"]["lineage_segments"], 2,
+            "observed revert lineage"
+        );
+    }
+    let returned_rows: u64 = scan_events
+        .iter()
+        .filter(|event| event["fields"]["event.name"] == "thread_history_turn_page_read")
+        .map(|event| {
+            event["fields"]["rows"]
+                .as_u64()
+                .expect("observed store rows")
+        })
+        .sum();
+    assert_eq!(returned_rows, retained_turns as u64);
+    println!(
+        "wakeup revert origin scan: retained={retained_turns} pages={pages} returned_rows={returned_rows} metadata_sql={} turn_sql={} rollout_opens={}",
+        count("state_thread_query_completed"),
+        count("thread_history_turn_query_completed"),
+        count("rollout_reader_opened"),
     );
     app.shutdown_gracefully().await?;
     Ok(())

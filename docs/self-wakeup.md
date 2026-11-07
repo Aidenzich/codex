@@ -85,7 +85,10 @@ or Cargo configuration is required.
 Native Rust tests cover tool/policy contracts, pending-state read-back,
 cancellation, serialized admission, conversation continuity, prompt-edit retention,
 failed automatic-turn recovery, balanced goal accounting, subscriber cleanup,
-typed history and TUI presentation. `scripts/wakeup_verification.py` runs one
+typed history and TUI presentation. The prompt-edit test also compares one and
+101 retained turns with the pending origin oldest, observing actual metadata/page
+queries and rollout opens to verify work follows pages and lineage segments.
+`scripts/wakeup_verification.py` runs one
 explicit native test command and translates its real harness results for Loops.
 It rejects empty selections, failures and ignored required tests, and uses the
 repository test runner’s standard 8 MiB Rust test stack.
@@ -106,6 +109,7 @@ python3 scripts/wakeup_build.py -- cargo build --locked --profile dev-small -p c
 cd codex-rs
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --lib wakeup
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --test all suite::wakeup::
+RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-app-server --test all suite::v2::thread_revert::wakeup -- --nocapture
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-tui --lib wakeup
 cd ..
 python3 scripts/wakeup_live.py --model gpt-5.6-sol --runtime-env /path/to/runtime.env

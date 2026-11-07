@@ -2529,38 +2529,47 @@ impl ThreadRequestProcessor {
         // Paginated resume may contain only a model-context window. The committed
         // store's turn list is the authority for membership in the retained prefix.
         if !wakeups.is_empty() {
-            let mut retained = std::collections::HashSet::new();
-            let mut remaining = wakeups.originating_turn_ids();
-            let mut cursor = None;
-            loop {
-                let page = self
-                    .thread_store
-                    .list_turns(codex_thread_store::ListTurnsParams {
-                        thread_id,
-                        include_archived: false,
-                        cursor: cursor.clone(),
-                        page_size: THREAD_TURNS_MAX_LIMIT,
-                        sort_direction: codex_thread_store::SortDirection::Desc,
-                        items_view: codex_thread_store::StoredTurnItemsView::NotLoaded,
-                    })
-                    .await
-                    .map_err(thread_store_resume_read_error)?;
-                for turn in page.turns {
-                    if remaining.remove(&turn.turn_id) {
-                        retained.insert(turn.turn_id);
+            let retained = async {
+                let mut retained = std::collections::HashSet::new();
+                let mut remaining = wakeups.originating_turn_ids();
+                let mut cursor = None;
+                loop {
+                    let page = self
+                        .thread_store
+                        .list_turns(codex_thread_store::ListTurnsParams {
+                            thread_id,
+                            include_archived: false,
+                            cursor: cursor.clone(),
+                            page_size: THREAD_TURNS_MAX_LIMIT,
+                            sort_direction: codex_thread_store::SortDirection::Desc,
+                            items_view: codex_thread_store::StoredTurnItemsView::NotLoaded,
+                        })
+                        .await
+                        .map_err(thread_store_resume_read_error)?;
+                    for turn in page.turns {
+                        if remaining.remove(&turn.turn_id) {
+                            retained.insert(turn.turn_id);
+                        }
                     }
+                    if remaining.is_empty() {
+                        break;
+                    }
+                    let Some(next) = page.next_cursor else {
+                        break;
+                    };
+                    if cursor.as_ref() == Some(&next) {
+                        return Err(internal_error("thread/revert turn cursor did not advance"));
+                    }
+                    cursor = Some(next);
                 }
-                if remaining.is_empty() {
-                    break;
-                }
-                let Some(next) = page.next_cursor else {
-                    break;
-                };
-                if cursor.as_ref() == Some(&next) {
-                    return Err(internal_error("thread/revert turn cursor did not advance"));
-                }
-                cursor = Some(next);
+                tracing::debug!(
+                    event.name = "wakeup_origin_scan_completed",
+                    retained = retained.len()
+                );
+                Ok::<_, JSONRPCErrorError>(retained)
             }
+            .instrument(tracing::debug_span!("wakeup_origin_scan", thread_id = %thread_id))
+            .await?;
             wakeups.retain_originating_turns(&retained);
         }
         let response_history = thread_history.clone();
