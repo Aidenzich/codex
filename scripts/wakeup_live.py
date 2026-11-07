@@ -197,8 +197,8 @@ def main():
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     target = Path(os.environ.get("CARGO_TARGET_DIR", repo / "codex-rs/target"))
     binary = (args.binary or target / "dev-small/codex").resolve()
-    if not binary.is_file():
-        raise RuntimeError("Build the candidate first: cargo build --locked --profile dev-small -p codex-cli --bin codex")
+    if not binary.is_file() or not binary.with_name("codex-code-mode-host").is_file():
+        raise RuntimeError("Build the candidate and its code-mode host first: cargo build --locked --profile dev-small -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host")
     runtime = binding(args.runtime_env)
     owned = workspace / ".loop-manager/runtime"
     owned.mkdir(parents=True, exist_ok=True)

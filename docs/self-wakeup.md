@@ -94,7 +94,7 @@ To reproduce with the candidate checkout:
 
 ```sh
 cd codex-rs
-cargo build --locked --profile dev-small -p codex-cli --bin codex
+cargo build --locked --profile dev-small -p codex-cli --bin codex -p codex-code-mode-host --bin codex-code-mode-host
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --lib wakeup
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --test all suite::wakeup::
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-tui --lib wakeup
