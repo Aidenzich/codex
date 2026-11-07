@@ -69,8 +69,10 @@ persistent scheduler: they do not survive session teardown or process restart.
 ## Verification
 
 Build with the repository's pinned Rust toolchain, Cargo and Git available on
-`PATH`. Cargo uses Git's native transport for pinned Git sources and recursive
-submodules; no global Git or Cargo configuration is required.
+`PATH`. The existing `dev-small` profile keeps debug artifacts small and disables
+incremental object caches for bounded verification disk use. Cargo uses Git's
+native transport for pinned Git sources and recursive submodules; no global Git
+or Cargo configuration is required.
 
 Native Rust tests cover tool/policy contracts, pending-state read-back,
 cancellation, serialized admission, conversation continuity, subscriber cleanup,
@@ -92,10 +94,10 @@ To reproduce with the candidate checkout:
 
 ```sh
 cd codex-rs
-cargo build --locked -p codex-cli --bin codex
-RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib wakeup
-RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --test all suite::wakeup::
-RUST_MIN_STACK=8388608 cargo test --locked -p codex-tui --lib wakeup
+cargo build --locked --profile dev-small -p codex-cli --bin codex
+RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --lib wakeup
+RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --test all suite::wakeup::
+RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-tui --lib wakeup
 cd ..
 python3 scripts/wakeup_live.py --model gpt-6.1-sol --runtime-env /path/to/runtime.env
 ```
