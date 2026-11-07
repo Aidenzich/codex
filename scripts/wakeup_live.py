@@ -93,7 +93,15 @@ class Observation:
             self.pump()
             if self.server.poll() is not None:
                 raise RuntimeError("Owned app-server exited during " + label)
-            value = predicate(self.records())
+            records = self.records()
+            for record in records:
+                payload = record.get("payload", {})
+                if (record.get("type") == "event_msg"
+                        and payload.get("type") == "task_complete"
+                        and payload.get("error")):
+                    error = payload["error"]
+                    raise RuntimeError("Native turn failed: " + json.dumps(error))
+            value = predicate(records)
             if value:
                 return value
             if self.cli.poll() is not None:
@@ -372,6 +380,17 @@ def main():
                       "relevantEvidence": [{"scenario": SCENARIO, "artifact": str(evidence),
                                             "taskId": first["task_id"], "threadId": meta[0]["id"]}]}
             print("Native model journey complete; inspect retained terminal and timeline:", evidence)
+        except Exception as error:
+            # A failed live journey is still an executed check. Preserve the
+            # actual native failure instead of reporting a missing result envelope.
+            (evidence / "failure.json").write_text(json.dumps({
+                "revision": revision, "requested_model": args.model,
+                "error": str(error), "utc": utc(),
+            }, indent=2) + "\n")
+            result = {"schema": "loops.verification.result.v1", "executed": 1,
+                      "passed": 0, "failed": 1, "undefined": 0, "pending": 0,
+                      "ambiguous": 0, "skipped": 0, "relevantEvidence": []}
+            raise
         finally:
             try:
                 if observer:

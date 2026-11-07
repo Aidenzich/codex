@@ -99,11 +99,14 @@ RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --l
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-core --test all suite::wakeup::
 RUST_MIN_STACK=8388608 cargo test --locked --profile dev-small -p codex-tui --lib wakeup
 cd ..
-python3 scripts/wakeup_live.py --model gpt-6.1-sol --runtime-env /path/to/runtime.env
+python3 scripts/wakeup_live.py --model gpt-5.6-sol --runtime-env /path/to/runtime.env
 ```
 
 The runtime binding must name `CODEX_WAKEUP_SMOKE_HOME` and
 `CODEX_WAKEUP_AUTH_SOURCE`. The latter is an approved read-only credential file.
+Select a real model available to the candidate client and account; the model
+catalog is client-version dependent. The evidence records the actual model from
+native turn contexts. A terminal provider error fails the check immediately.
 The driver copies it into a fresh task-owned home, uses a temporary fixture and
 private Unix socket, and cleans up only its own processes and fixture. Copied
 credentials remain in the reported isolated runtime home for operator removal
