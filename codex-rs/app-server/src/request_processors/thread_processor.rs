@@ -122,6 +122,8 @@ struct PreparedResumeConfig {
 }
 
 struct ThreadRevertRuntimeSnapshot {
+    wakeups: codex_core::WakeupReplacement,
+    wakeup_connections: Option<tokio::sync::watch::Receiver<bool>>,
     config: Config,
     settings: CodexThreadSettingsOverrides,
     client_mcp_extensions: ClientMcpExtensions,
@@ -2298,7 +2300,9 @@ impl ThreadRequestProcessor {
         config.config_layer_stack = config
             .config_layer_stack
             .with_mcp_ema_cancellation(ema_cancellation);
-        let runtime_snapshot = ThreadRevertRuntimeSnapshot {
+        let mut runtime_snapshot = ThreadRevertRuntimeSnapshot {
+            wakeups: Default::default(),
+            wakeup_connections: None,
             config,
             settings: thread.restorable_thread_settings().await,
             client_mcp_extensions: thread.client_mcp_extensions(),
@@ -2332,6 +2336,14 @@ impl ThreadRequestProcessor {
                 ))
             })?;
 
+        runtime_snapshot.wakeup_connections = self
+            .thread_state_manager
+            .subscribe_to_has_connections(thread_id)
+            .await;
+        if let Some(connections) = runtime_snapshot.wakeup_connections.as_mut() {
+            connections.borrow_and_update();
+        }
+        runtime_snapshot.wakeups = thread.take_wakeups_for_replacement().await;
         match wait_for_thread_shutdown(&thread).await {
             ThreadShutdownResult::Complete => {}
             ThreadShutdownResult::SubmitFailed => {
@@ -2490,6 +2502,8 @@ impl ThreadRequestProcessor {
             mut config,
             settings,
             client_mcp_extensions,
+            mut wakeups,
+            wakeup_connections,
         } = runtime_snapshot;
         if let Some(collaboration_mode) = settings.collaboration_mode.as_ref() {
             config.model = Some(collaboration_mode.model().to_string());
@@ -2512,6 +2526,52 @@ impl ThreadRequestProcessor {
                 /*prepared_model_context*/ None,
             )
             .await?;
+        // Paginated resume may contain only a model-context window. The committed
+        // store's turn list is the authority for membership in the retained prefix.
+        if !wakeups.is_empty() {
+            let retained = async {
+                let mut retained = std::collections::HashSet::new();
+                let mut remaining = wakeups.originating_turn_ids();
+                let mut cursor = None;
+                loop {
+                    let page = self
+                        .thread_store
+                        .list_turns(codex_thread_store::ListTurnsParams {
+                            thread_id,
+                            include_archived: false,
+                            cursor: cursor.clone(),
+                            page_size: THREAD_TURNS_MAX_LIMIT,
+                            sort_direction: codex_thread_store::SortDirection::Desc,
+                            items_view: codex_thread_store::StoredTurnItemsView::NotLoaded,
+                        })
+                        .await
+                        .map_err(thread_store_resume_read_error)?;
+                    for turn in page.turns {
+                        if remaining.remove(&turn.turn_id) {
+                            retained.insert(turn.turn_id);
+                        }
+                    }
+                    if remaining.is_empty() {
+                        break;
+                    }
+                    let Some(next) = page.next_cursor else {
+                        break;
+                    };
+                    if cursor.as_ref() == Some(&next) {
+                        return Err(internal_error("thread/revert turn cursor did not advance"));
+                    }
+                    cursor = Some(next);
+                }
+                tracing::debug!(
+                    event.name = "wakeup_origin_scan_completed",
+                    retained = retained.len()
+                );
+                Ok::<_, JSONRPCErrorError>(retained)
+            }
+            .instrument(tracing::debug_span!("wakeup_origin_scan", thread_id = %thread_id))
+            .await?;
+            wakeups.retain_originating_turns(&retained);
+        }
         let response_history = thread_history.clone();
         let NewThread {
             thread_id: resumed_thread_id,
@@ -2569,6 +2629,17 @@ impl ThreadRequestProcessor {
         let thread_state = self.thread_state_manager.thread_state(thread_id).await;
         self.ensure_listener_task_running(thread_id, Arc::clone(&codex_thread), thread_state)
             .await?;
+        // Any last-detach transition during the handoff revokes the moved jobs,
+        // even if another client has already reattached. The watch version retains
+        // that transition when its current boolean has returned to true.
+        self.thread_state_manager
+            .restore_replacement_wakeups(
+                thread_id,
+                codex_thread.as_ref(),
+                wakeups,
+                wakeup_connections,
+            )
+            .await;
         let mut thread = self
             .load_thread_from_resume_source_or_send_internal(
                 thread_id,

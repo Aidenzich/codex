@@ -5607,6 +5607,32 @@ class ThreadInjectItemsResponse(BaseModel):
     )
 
 
+class WakeupStartedThreadItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    completed_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="completedAtMs",
+            description="Unix timestamp in milliseconds when the item completed, if recorded.",
+        ),
+    ] = None
+    id: str
+    instruction: str
+    origin_turn_id: Annotated[str, Field(alias="originTurnId")]
+    resumed_turn_id: Annotated[str, Field(alias="resumedTurnId")]
+    started_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="startedAtMs",
+            description="Unix timestamp in milliseconds when the item started, if recorded.",
+        ),
+    ] = None
+    task_id: Annotated[str, Field(alias="taskId")]
+    type: Annotated[Literal["wakeupStarted"], Field(title="WakeupStartedThreadItemType")]
+
+
 class HookPromptThreadItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12452,6 +12478,7 @@ class FunctionCallOutputThreadItem(BaseModel):
 class ThreadItem(
     RootModel[
         UserMessageThreadItem
+        | WakeupStartedThreadItem
         | HookPromptThreadItem
         | AgentMessageThreadItem
         | FunctionCallOutputThreadItem
@@ -12475,6 +12502,7 @@ class ThreadItem(
 ):
     root: Annotated[
         UserMessageThreadItem
+        | WakeupStartedThreadItem
         | HookPromptThreadItem
         | AgentMessageThreadItem
         | FunctionCallOutputThreadItem

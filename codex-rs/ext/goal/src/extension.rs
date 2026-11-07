@@ -235,6 +235,13 @@ impl<C> TurnLifecycleContributor for GoalExtension<C>
 where
     C: Send + Sync + 'static,
 {
+    fn turn_start_phase(
+        &self,
+        _thread_store: &codex_extension_api::ExtensionData,
+    ) -> codex_extension_api::TurnStartPhase {
+        codex_extension_api::TurnStartPhase::CommittedTaskStart
+    }
+
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {

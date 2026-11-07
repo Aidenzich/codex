@@ -59,6 +59,7 @@ pub use codex_thread::GuardianAuthorizationVersion;
 pub use codex_thread::GuardianRootMessage;
 pub use codex_thread::GuardianRootSnapshot;
 pub use codex_thread::ThreadConfigSnapshot;
+pub use codex_thread::WakeupReplacement;
 pub use guardian::ScoreAuthorization as GuardianScoreAuthorization;
 pub use guardian::guardian_policy_model;
 pub use session::turn_context::TurnContext;

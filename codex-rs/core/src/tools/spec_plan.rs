@@ -30,6 +30,7 @@ use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
+use crate::tools::handlers::WakeupHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
@@ -1409,6 +1410,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(GetContextRemainingHandler::new(
             messages.and_then(|messages| messages.get_context_remaining.as_ref()),
         ));
+    }
+
+    if crate::session::wakeup::wakeup_tools_allowed(turn_context) {
+        registry.add(WakeupHandler::Schedule);
+        registry.add(WakeupHandler::List);
+        registry.add(WakeupHandler::Cancel);
     }
 
     let current_time_reminder_enabled = features.enabled(Feature::CurrentTimeReminder);

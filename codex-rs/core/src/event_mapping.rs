@@ -181,6 +181,9 @@ fn parse_agent_message(
 }
 
 pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
+    if let Some(wakeup) = codex_protocol::items::parse_wakeup_started_message(item) {
+        return Some(TurnItem::WakeupStarted(wakeup));
+    }
     match item {
         ResponseItem::Message {
             role,

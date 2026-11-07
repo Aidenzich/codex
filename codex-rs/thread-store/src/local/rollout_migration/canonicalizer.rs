@@ -121,6 +121,7 @@ impl LegacyRolloutCanonicalizer {
                         "legacy rollout contains an unsupported response item",
                     ));
                 }
+                let wakeup = codex_protocol::items::parse_wakeup_started_message(&response.item);
                 let hook = match &response.item {
                     ResponseItem::Message {
                         role, content, id, ..
@@ -129,6 +130,12 @@ impl LegacyRolloutCanonicalizer {
                 };
                 self.write_item(writer, &timestamp, RolloutItem::ResponseItem(response))
                     .await?;
+                if let Some(wakeup) = wakeup {
+                    self.ensure_turn(writer, &timestamp, source_index).await?;
+                    self.reasoning = None;
+                    self.write_completed_item(writer, &timestamp, TurnItem::WakeupStarted(wakeup))
+                        .await?;
+                }
                 if let Some(hook) = hook {
                     self.ensure_turn(writer, &timestamp, source_index).await?;
                     self.reasoning = None;

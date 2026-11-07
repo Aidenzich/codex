@@ -88,6 +88,11 @@ pub(crate) struct RecordedTokenDelta {
 }
 
 impl GoalAccountingState {
+    #[cfg(test)]
+    pub(crate) fn retained_turn_count(&self) -> usize {
+        self.inner().turns.len()
+    }
+
     pub(crate) fn start_turn(
         &self,
         turn_id: impl Into<String>,
@@ -194,6 +199,7 @@ impl GoalAccountingState {
             }
             TurnItem::UserMessage(_)
             | TurnItem::FunctionCallOutput(_)
+            | TurnItem::WakeupStarted(_)
             | TurnItem::HookPrompt(_)
             | TurnItem::Plan(_)
             | TurnItem::CommandExecution(_)

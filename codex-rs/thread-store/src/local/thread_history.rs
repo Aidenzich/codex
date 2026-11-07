@@ -535,6 +535,7 @@ WHERE thread_id = ?
                 phase: Some(MessagePhase::Commentary | MessagePhase::PartialAnswer) | None,
                 ..
             }
+            | ThreadItemPayload::WakeupStarted { .. }
             | ThreadItemPayload::HookPrompt { .. }
             | ThreadItemPayload::FunctionCallOutput { .. }
             | ThreadItemPayload::Plan { .. }

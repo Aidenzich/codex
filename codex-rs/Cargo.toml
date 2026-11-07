@@ -653,6 +653,9 @@ inherits = "dev"
 opt-level = 0
 debug = "none"
 strip = "symbols"
+# Native verification can share this profile without retaining per-crate
+# incremental object caches alongside the linked CLI and test binaries.
+incremental = false
 
 [profile.release]
 lto = "thin"

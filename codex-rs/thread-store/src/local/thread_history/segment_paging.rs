@@ -181,12 +181,18 @@ LEFT JOIN thread_items AS final_agent
                 .push(" ORDER BY page_turns.rollout_ordinal ")
                 .push(order);
         }
+        let segment_rows = query
+            .build()
+            .fetch_all(pool)
+            .await
+            .map_err(thread_history_error)?;
+        tracing::debug!(
+            event.name = "thread_history_turn_query_completed",
+            rows = segment_rows.len(),
+            segment_index
+        );
         rows.extend(
-            query
-                .build()
-                .fetch_all(pool)
-                .await
-                .map_err(thread_history_error)?
+            segment_rows
                 .into_iter()
                 .map(|row| {
                     let summary_items = if matches!(items_view, StoredTurnItemsView::Summary) {

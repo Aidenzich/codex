@@ -1050,6 +1050,42 @@
         },
         {
           "properties": {
+            "id": {
+              "type": "string"
+            },
+            "instruction": {
+              "type": "string"
+            },
+            "originTurnId": {
+              "type": "string"
+            },
+            "resumedTurnId": {
+              "type": "string"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "wakeupStarted"
+              ],
+              "title": "WakeupStartedThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "instruction",
+            "originTurnId",
+            "resumedTurnId",
+            "taskId",
+            "type"
+          ],
+          "title": "WakeupStartedThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "fragments": {
               "items": {
                 "$ref": "#/definitions/HookPromptFragment"

@@ -338,7 +338,8 @@ fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
             let text = markdown_to_search_text(text);
             (!text.is_empty()).then_some(Cow::Owned(text))
         }
-        ThreadItemPayload::HookPrompt { .. }
+        ThreadItemPayload::WakeupStarted { .. }
+        | ThreadItemPayload::HookPrompt { .. }
         | ThreadItemPayload::FunctionCallOutput { .. }
         | ThreadItemPayload::Plan { .. }
         | ThreadItemPayload::Reasoning { .. }

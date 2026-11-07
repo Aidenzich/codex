@@ -11,6 +11,10 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Quickstart
 
+This fork supports [native one-shot wakeups](docs/self-wakeup.md) in a running
+interactive session: ask Codex to return later, finish its answer now, and
+continue the same conversation automatically.
+
 ### Installing and running Codex CLI
 
 Run the following on Mac or Linux to install Codex CLI:

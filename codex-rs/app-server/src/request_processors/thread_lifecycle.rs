@@ -419,6 +419,7 @@ async fn start_listener(
             .subscribe_and_install_listener(
                 conversation_id,
                 &listener_state,
+                &conversation,
                 connection_ids,
                 |attached| {
                     let listener_matches = state.listener_matches(&conversation);

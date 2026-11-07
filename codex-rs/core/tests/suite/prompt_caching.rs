@@ -181,6 +181,7 @@ async fn prompt_tools_are_consistent_across_requests(
         thread_manager,
         ..
     } = test_codex()
+        .with_session_source(codex_protocol::protocol::SessionSource::Cli)
         .with_models_manager(models_manager)
         .with_pre_build_hook(write_global_instructions)
         .with_config(move |config| {
@@ -273,6 +274,7 @@ async fn prompt_tools_are_consistent_across_requests(
     }
     expected_tools_names.extend([
         "request_user_input",
+        "clock",
         "apply_patch",
         "view_image",
         "tool_search",

@@ -322,6 +322,15 @@ pub enum ThreadItemPayload {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    WakeupStarted {
+        id: String,
+        task_id: String,
+        origin_turn_id: String,
+        resumed_turn_id: String,
+        instruction: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     HookPrompt {
         id: String,
         fragments: Vec<HookPromptFragment>,
@@ -536,6 +545,7 @@ impl ThreadItemPayload {
     pub fn id(&self) -> &str {
         match self {
             Self::UserMessage { id, .. }
+            | Self::WakeupStarted { id, .. }
             | Self::HookPrompt { id, .. }
             | Self::AgentMessage { id, .. }
             | Self::FunctionCallOutput { id, .. }
@@ -958,6 +968,13 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                 id: user.id,
                 client_id: user.client_id,
                 content: user.content.into_iter().map(UserInput::from).collect(),
+            },
+            CoreTurnItem::WakeupStarted(item) => Self::WakeupStarted {
+                id: item.id,
+                task_id: item.task_id,
+                origin_turn_id: item.origin_turn_id,
+                resumed_turn_id: item.resumed_turn_id,
+                instruction: item.instruction,
             },
             CoreTurnItem::HookPrompt(hook_prompt) => Self::HookPrompt {
                 id: hook_prompt.id,
@@ -1935,4 +1952,28 @@ pub struct ToolRequestUserInputAnswer {
 /// EXPERIMENTAL. Response payload mapping question ids to answers.
 pub struct ToolRequestUserInputResponse {
     pub answers: HashMap<String, ToolRequestUserInputAnswer>,
+}
+
+#[cfg(test)]
+mod wakeup_tests {
+    use super::*;
+
+    #[test]
+    fn wakeup_started_has_typed_transport_fields() {
+        let core = codex_protocol::items::WakeupStartedItem {
+            id: "item-1".into(),
+            task_id: "task-1".into(),
+            origin_turn_id: "origin-1".into(),
+            resumed_turn_id: "resumed-1".into(),
+            instruction: "<do> & 測試".into(),
+        };
+        let item = ThreadItemPayload::from(CoreTurnItem::WakeupStarted(core));
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["type"], "wakeupStarted");
+        assert_eq!(value["taskId"], "task-1");
+        assert_eq!(value["originTurnId"], "origin-1");
+        assert_eq!(value["resumedTurnId"], "resumed-1");
+        assert_eq!(value["instruction"], "<do> & 測試");
+        assert_eq!(item.id(), "item-1");
+    }
 }

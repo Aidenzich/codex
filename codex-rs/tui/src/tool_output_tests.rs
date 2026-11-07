@@ -3,6 +3,44 @@ use crate::terminal_hyperlinks::visible_lines;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn wakeup_receipts_only_consume_the_three_canonical_clock_tools() {
+    use codex_protocol::models::FunctionCallOutputBody;
+    let output = FunctionCallOutputBody::Text(r#"{"wakeups":[]}"#.into());
+    for (name, namespace) in [
+        ("list_wakeups", None),
+        ("list_wakeups", Some("another_tool")),
+        ("sleep", Some("clock")),
+        ("curr_time", Some("clock")),
+        ("send_message_to_thread", Some("codex_tui")),
+    ] {
+        assert!(wakeup_receipt_cell(name, namespace, &output).is_none());
+    }
+    assert!(wakeup_receipt_cell("list_wakeups", Some("clock"), &output).is_some());
+}
+
+#[test]
+fn wakeup_malformed_receipt_has_specific_recovery_without_raw_json() {
+    use crate::history_cell::HistoryCell;
+    use codex_protocol::models::FunctionCallOutputBody;
+    let cell = wakeup_receipt_cell(
+        "schedule_wakeup",
+        Some("clock"),
+        &FunctionCallOutputBody::Text(r#"{"unexpected":"body"}"#.into()),
+    )
+    .unwrap();
+    let text = cell
+        .display_lines(80)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Wakeup request failed"));
+    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("Ask to list pending wakeups before retrying"));
+    assert!(!text.contains("unexpected"));
+}
+
+#[test]
 fn preview_caps_wrapped_output_and_counts_hidden_logical_lines() {
     let lines = [
         "first",

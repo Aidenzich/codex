@@ -133,7 +133,9 @@ pub(super) fn cells(item: ThreadItemPayload, cwd: &AbsolutePathBuf) -> Transcrip
                 cells.push(Arc::new(cell));
             }
         }
-        ThreadItemPayload::UserMessage { .. }
+        // Wakeup notices are rendered by the main transcript dispatcher.
+        ThreadItemPayload::WakeupStarted { .. }
+        | ThreadItemPayload::UserMessage { .. }
         | ThreadItemPayload::AgentMessage { .. }
         | ThreadItemPayload::FunctionCallOutput { .. }
         | ThreadItemPayload::Plan { .. }

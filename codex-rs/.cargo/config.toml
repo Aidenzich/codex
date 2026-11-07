@@ -1,3 +1,9 @@
+[net]
+# Use Git's native transport for pinned sources and recursive submodules.
+# In particular, the V8 dependency's Chromium mirrors can fail with libgit2's
+# SecureTransport backend on macOS while the system Git transport succeeds.
+git-fetch-with-cli = true
+
 [env]
 # Roughly one arena per four CPUs reduces idle RSS after Linux musl conversations unload.
 JEMALLOC_SYS_WITH_MALLOC_CONF = "narenas_ratio:0.25"

@@ -3431,3 +3431,53 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
 
 #[path = "spec_plan_strict_third_party_tests.rs"]
 mod strict_third_party;
+
+#[tokio::test]
+async fn wakeup_tools_follow_host_provenance_and_stay_direct() {
+    for source in [
+        SessionSource::Cli,
+        SessionSource::VSCode,
+        SessionSource::Exec,
+        SessionSource::Mcp,
+        SessionSource::Custom("custom".into()),
+        SessionSource::Unknown,
+    ] {
+        let allowed = matches!(source, SessionSource::Cli | SessionSource::VSCode);
+        for code_mode_only in [false, true] {
+            let plan = probe(|turn| {
+                turn.session_source = source.clone();
+                set_feature(turn, Feature::CurrentTimeReminder, false);
+                if code_mode_only {
+                    set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+                }
+            })
+            .await;
+            for name in ["schedule_wakeup", "list_wakeups", "cancel_wakeup"] {
+                let name = ToolName::namespaced("clock", name).to_string();
+                assert_eq!(plan.registered_names.contains(&name), allowed);
+                if allowed {
+                    assert_eq!(plan.exposure(&name), ToolExposure::DirectModelOnly);
+                }
+            }
+            if allowed && code_mode_only {
+                let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME)
+                else {
+                    panic!("expected code mode exec");
+                };
+                assert!(!exec.description.contains("clock__schedule_wakeup"));
+                assert!(!exec.description.contains("clock__list_wakeups"));
+                assert!(!exec.description.contains("clock__cancel_wakeup"));
+            }
+        }
+    }
+    let restricted = probe(|turn| {
+        turn.session_source = SessionSource::Cli;
+        turn.root_capabilities_restricted = true;
+    })
+    .await;
+    restricted.assert_registered_lacks(&[
+        "clock.schedule_wakeup",
+        "clock.list_wakeups",
+        "clock.cancel_wakeup",
+    ]);
+}

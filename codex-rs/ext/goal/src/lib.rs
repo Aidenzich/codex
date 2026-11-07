@@ -26,3 +26,6 @@ pub use spec::CREATE_GOAL_TOOL_NAME;
 pub use spec::GET_GOAL_TOOL_NAME;
 pub use spec::UPDATE_GOAL_TOOL_NAME;
 pub use tool::CreateGoalRequest;
+
+#[cfg(test)]
+mod wakeup_admission_tests;

@@ -222,9 +222,28 @@ pub struct BackgroundTerminalInfo {
     pub cwd: PathUri,
 }
 
+pub use crate::session::wakeup::WakeupReplacement;
+
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// Publish the host's actual subscription state. Detach revokes unclaimed wakeups.
+    pub async fn set_wakeup_host_attached(&self, attached: bool) {
+        self.session.set_wakeup_attached(attached).await;
+    }
+
+    /// Fence the old runtime and move its volatile jobs into a same-thread replacement.
+    pub async fn take_wakeups_for_replacement(&self) -> WakeupReplacement {
+        self.session.take_wakeups_for_replacement().await
+    }
+
+    /// Restore only after the host has attached the replacement runtime.
+    pub async fn restore_wakeups_after_replacement(&self, replacement: WakeupReplacement) {
+        self.session
+            .restore_wakeups_after_replacement(replacement)
+            .await;
+    }
+
     pub(crate) fn new(
         session: Arc<Session>,
         io: SessionIo,
