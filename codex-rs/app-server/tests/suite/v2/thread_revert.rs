@@ -253,13 +253,14 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin(
         "one store page operation per chunk: {scan_events:?}"
     );
     // Revert creates an empty replacement rollout and one retained ancestor.
-    // Each page validates metadata and resolves the current rollout once. Its
-    // header is opened by resolution, then each of the two lineage headers is
-    // opened. The first page queries the empty leaf and retained ancestor;
+    // Each page validates metadata, resolves the current rollout, and looks up
+    // the original ancestor path (sibling prefetch skips the original rollout).
+    // Resolution opens the current header, then opens both lineage headers.
+    // The first page queries the empty leaf and retained ancestor;
     // a subsequent cursor starts directly in that ancestor.
     assert_eq!(
         count("state_thread_query_completed"),
-        pages * 2,
+        pages * 3,
         "actual metadata SQL queries per page: {scan_events:?}"
     );
     assert_eq!(
