@@ -76,7 +76,8 @@ Native Rust tests cover tool/policy contracts, pending-state read-back,
 cancellation, serialized admission, conversation continuity, subscriber cleanup,
 typed history and TUI presentation. `scripts/wakeup_verification.py` runs one
 explicit native test command and translates its real harness results for Loops.
-It rejects empty selections, failures and ignored required tests.
+It rejects empty selections, failures and ignored required tests, and uses the
+repository test runner’s standard 8 MiB Rust test stack.
 
 `scripts/wakeup_live.py` runs the built candidate TUI against an owned private
 app-server endpoint using the approved isolated runtime binding. It retains a
@@ -92,9 +93,9 @@ To reproduce with the candidate checkout:
 ```sh
 cd codex-rs
 cargo build --locked -p codex-cli --bin codex
-cargo test --locked -p codex-core --lib wakeup
-cargo test --locked -p codex-core --test all suite::wakeup::
-cargo test --locked -p codex-tui --lib wakeup
+RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib wakeup
+RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --test all suite::wakeup::
+RUST_MIN_STACK=8388608 cargo test --locked -p codex-tui --lib wakeup
 cd ..
 python3 scripts/wakeup_live.py --model gpt-6.1-sol --runtime-env /path/to/runtime.env
 ```

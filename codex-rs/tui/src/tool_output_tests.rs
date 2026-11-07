@@ -35,7 +35,8 @@ fn wakeup_malformed_receipt_has_specific_recovery_without_raw_json() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("Wakeup request failed"));
-    assert!(text.contains("Ask to list pending wakeups before retrying"));
+    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("Ask to list pending wakeups before retrying"));
     assert!(!text.contains("unexpected"));
 }
 

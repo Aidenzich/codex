@@ -89,6 +89,7 @@ pub(crate) struct WakeupRegistry {
 }
 
 impl WakeupRegistry {
+    #[cfg(test)]
     pub(crate) fn attached(&self) -> bool {
         self.attached
     }
@@ -199,6 +200,14 @@ pub(crate) fn wakeup_configuration_is_current(
 }
 
 impl Session {
+    /// The task admission owner must hold active_turn before taking this lock.
+    /// Keep it through claim and synchronous task registration.
+    pub(crate) async fn wakeup_admission_state(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, crate::state::SessionState> {
+        self.state.lock().await
+    }
+
     pub(crate) async fn schedule_wakeup(
         &self,
         duration_ms: u64,

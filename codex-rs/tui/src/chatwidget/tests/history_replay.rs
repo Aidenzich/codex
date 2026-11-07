@@ -32,6 +32,7 @@ async fn wakeup_terminal_captures_native_receipts_and_idle_composer() {
     let scheduled = serde_json::json!({"task_id": task_id, "due_at": "2026-11-07T01:01:00Z", "instruction": "Check the build result and report any failures.", "status": "scheduled"});
     let mut due = scheduled.clone();
     due["status"] = "due".into();
+    due["task_id"] = "38f477e5-e6aa-4779-835c-696528709827".into();
     let cases = [
         (
             "list_wakeups",
@@ -270,6 +271,7 @@ async fn wakeup_management_live_history_states_keep_composer_usable() {
             );
         }
         chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        chat.bottom_pane.flush_pending_composer_input();
         assert_eq!(chat.bottom_pane.composer_text(), "a");
     }
 }

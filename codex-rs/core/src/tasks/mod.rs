@@ -346,11 +346,10 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
-        let turn_state = {
+        let (turn_state, pending_items) = {
             let mut active = self.active_turn.lock().await;
             if self.outcome_handoffs_closed()
-                || self.state.lock().await.shutting_down
+                || self.wakeup_admission_state().await.shutting_down
                 || reservation.as_ref().is_some_and(|expected| {
                     active
                         .as_ref()
@@ -359,10 +358,12 @@ impl Session {
             {
                 return true;
             }
+            // Do not drain mail into an already superseded wake reservation.
+            let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
             let turn = active.get_or_insert_with(ActiveTurn::default);
             debug_assert!(turn.task.is_none());
             turn.finishing = None;
-            Arc::clone(&turn.turn_state)
+            (Arc::clone(&turn.turn_state), pending_items)
         };
         turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
         self.input_queue
@@ -398,17 +399,12 @@ impl Session {
             Some(reserved) => !reserved.lock().await.pending_input.is_empty(),
             None => false,
         };
-        let mut state = self.state.lock().await;
+        let mut state = self.wakeup_admission_state().await;
         if state.shutting_down {
             return true;
         }
         if reservation.is_some() {
-            if state
-                .wakeups
-                .next_deadline()
-                .is_some_and(|due| due <= tokio::time::Instant::now())
-                && !crate::session::wakeup::wakeup_configuration_is_current(&turn_context, &state)
-            {
+            if !crate::session::wakeup::wakeup_configuration_is_current(&turn_context, &state) {
                 // Keep the same reservation, its queued input and every unclaimed
                 // job. The caller rebuilds using the now-current settings.
                 return false;
@@ -416,7 +412,7 @@ impl Session {
 
             while let Some(job) = state.wakeups.claim_due(tokio::time::Instant::now()) {
                 let reminder = codex_protocol::items::WakeupStartedItem {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: (self.item_id_generator)("msg").to_string(),
                     task_id: job.task_id,
                     origin_turn_id: job.originating_turn_id,
                     resumed_turn_id: turn_context.sub_id.clone(),

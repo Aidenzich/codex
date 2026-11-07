@@ -1,0 +1,69 @@
+---
+source: tui/src/chatwidget/tests/history_replay.rs
+expression: rendered
+---
+◦ Pending wakeups at this check
+  Wakeup scheduled
+  ID: 82b2f652-1712-4016-b430-8f895b50fc11
+  Due: 2026-11-07T01:01:00Z
+  Check the build result and report any
+  failures.
+  Wakeup due — waiting for the current
+  turn to finish
+  ID: 38f477e5-e6aa-4779-835c-696528709827
+  Due: 2026-11-07T01:01:00Z
+  Check the build result and report any
+  failures.
+  Ask to list pending wakeups or cancel an
+  ID. Pending work needs a live client
+  with this conversation open. Leaving or
+  closing the last one cancels pending
+  work; resuming it does not restore jobs.
+
+◦ Pending wakeups at this check
+  No pending wakeups.
+  Ask to list pending wakeups or cancel an
+  ID. Pending work needs a live client
+  with this conversation open. Leaving or
+  closing the last one cancels pending
+  work; resuming it does not restore jobs.
+
+◦ Wakeup cancelled
+  ID: 82b2f652-1712-4016-b430-8f895b50fc11
+  Ask to list pending wakeups or cancel an
+  ID. Pending work needs a live client
+  with this conversation open. Leaving or
+  closing the last one cancels pending
+  work; resuming it does not restore jobs.
+
+◦ Wakeup not pending (already started or
+  unknown ID)
+  ID: 82b2f652-1712-4016-b430-8f895b50fc11
+  Ask to list pending wakeups or cancel an
+  ID. Pending work needs a live client
+  with this conversation open. Leaving or
+  closing the last one cancels pending
+  work; resuming it does not restore jobs.
+
+◦ Wakeup request failed
+  At most 64 wakeups may be pending;
+  cancel one first
+  Check the delay, instruction and task
+  ID, or cancel a pending wakeup and
+  retry.
+  Ask to list pending wakeups or cancel an
+  ID. Pending work needs a live client
+  with this conversation open. Leaving or
+  closing the last one cancels pending
+  work; resuming it does not restore jobs.
+
+◦ Wakeup started
+  ID: 82b2f652-1712-4016-b430-8f895b50fc11
+  Check the build result and report any
+  failures.
+
+
+
+› Ask to list pending wakeups
+
+  GPT-5.6-Sol default · /tmp/project

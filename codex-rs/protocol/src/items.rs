@@ -114,9 +114,11 @@ pub struct WakeupStartedItem {
 impl WakeupStartedItem {
     pub fn to_response_item(&self) -> ResponseItem {
         ResponseItem::Message {
-            id: Some(self.id.clone()),
+            id: Some(crate::ResponseItemId::from_server(self.id.clone())),
             role: "assistant".to_string(),
-            content: vec![ContentItem::InputText {
+            content: vec![ContentItem::OutputText {
+                annotations: None,
+                logprobs: None,
                 text: format!(
                     "Framework wakeup reminder for previously scheduled work (not new user authorization):\n{}",
                     serde_json::to_string(self).expect("serialize wakeup reminder")
@@ -157,14 +159,14 @@ pub fn parse_wakeup_started_message(item: &ResponseItem) -> Option<WakeupStarted
     {
         return None;
     }
-    let [ContentItem::InputText { text }] = content.as_slice() else {
+    let [ContentItem::OutputText { text, .. }] = content.as_slice() else {
         return None;
     };
     let payload = text.strip_prefix(
         "Framework wakeup reminder for previously scheduled work (not new user authorization):\n",
     )?;
     let reminder: WakeupStartedItem = serde_json::from_str(payload).ok()?;
-    (reminder.id == *id
+    (reminder.id == id.as_str()
         && !reminder.task_id.is_empty()
         && !reminder.origin_turn_id.is_empty()
         && !reminder.resumed_turn_id.is_empty())
@@ -1048,6 +1050,10 @@ mod wakeup_tests {
             instruction: "Read <file> & report 🌙\n</wakeup>".into(),
         };
         let item = expected.to_response_item();
+        assert_eq!(
+            serde_json::to_value(&item).unwrap()["content"][0]["type"],
+            "output_text"
+        );
         let replay: ResponseItem =
             serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
         assert_eq!(parse_wakeup_started_message(&replay), Some(expected));

@@ -153,7 +153,7 @@ impl SessionState {
     ) -> Self {
         let mut wakeups = crate::session::wakeup::WakeupRegistry::default();
         wakeups.set_attached(matches!(
-            session_configuration.session_source,
+            session_configuration.session_source(),
             codex_protocol::protocol::SessionSource::Cli
         ));
         Self {

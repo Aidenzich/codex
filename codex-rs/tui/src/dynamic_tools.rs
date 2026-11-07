@@ -1029,6 +1029,7 @@ async fn execute_inner(
                                         "name": "webSearch", "status": null
                                     })),
                                     ThreadItemPayload::UserMessage { .. }
+                                    | ThreadItemPayload::WakeupStarted { .. }
                                     | ThreadItemPayload::FunctionCallOutput { .. }
                                     | ThreadItemPayload::HookPrompt { .. }
                                     | ThreadItemPayload::AgentMessage { .. }
@@ -1398,6 +1399,13 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                     UserInput::Skill { name, path } => json!({"type": "skill", "name": name, "path": path}),
                     UserInput::Mention { name, path } => json!({"type": "mention", "name": name, "path": path}),
                 }).collect::<Vec<_>>()
+            }),
+            ThreadItemPayload::WakeupStarted {
+                id, task_id, origin_turn_id, resumed_turn_id, instruction,
+            } => json!({
+                "type": "wakeupStarted", "id": id, "taskId": task_id,
+                "originTurnId": origin_turn_id, "resumedTurnId": resumed_turn_id,
+                "instruction": truncate(instruction, DEFAULT_OUTPUT_CHARS)
             }),
             ThreadItemPayload::HookPrompt { id, fragments } => json!({
                 "type": "hookPrompt", "id": id, "fragmentCount": fragments.len()

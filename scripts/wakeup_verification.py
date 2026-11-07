@@ -52,10 +52,14 @@ def main():
         parser.error("one native test command is required after --")
     # Cargo's standard harness summary is the execution oracle, not our exit alone.
     output = []
+    # Match the repository justfile and Rust CI: large native App futures need
+    # the established 8 MiB harness stack, not the platform default 2 MiB.
+    test_env = dict(os.environ)
+    test_env.setdefault("RUST_MIN_STACK", "8388608")
     try:
         process = subprocess.Popen(
             command, cwd=args.cwd, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1,
+            stderr=subprocess.STDOUT, text=True, bufsize=1, env=test_env,
         )
         for line in process.stdout:
             sys.stdout.write(line)

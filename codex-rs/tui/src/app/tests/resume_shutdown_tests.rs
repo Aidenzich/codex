@@ -14,8 +14,27 @@ async fn wakeup_new_and_resume_routes_unsubscribe_previous_conversation() -> Res
     use super::session_lifecycle_requests::start_recording_app_server;
     let (mut app, _events, _commands) = make_test_app_with_channels().await;
     let (mut server, requests, proxy) = start_recording_app_server(&app.config, None, None).await?;
-    let original = server.start_thread(&app.config).await?;
-    let original_id = original.session.thread_id;
+    // A fresh empty thread has no persisted rollout to resume. Use the same
+    // native paginated history fixture as the established lifecycle tests.
+    let original_id = ThreadId::from_string(
+        &app_test_support::create_fake_paginated_rollout(
+            app.config.codex_home.as_path(),
+            "2026-01-02T00-00-00",
+            "2026-01-02T00:00:00Z",
+            "Return to this conversation",
+            Some(app.config.model_provider_id.as_str()),
+            None,
+        )
+        .map_err(|error| color_eyre::eyre::eyre!("failed to create history rollout: {error}"))?,
+    )?;
+    let original = server
+        .resume_thread(
+            &app.local_settings,
+            app.config.clone(),
+            original_id,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
     app.enqueue_primary_thread_session(original.session, original.turns)
         .await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -29,6 +48,22 @@ async fn wakeup_new_and_resume_routes_unsubscribe_previous_conversation() -> Res
             .iter()
             .any(|params| params["threadId"] == original_id.to_string())
     );
+    // Empty new tabs are deliberately retained by the existing dashboard. A
+    // conversation with a scheduled job has begun a turn, which leaves that
+    // blank-tab class through this canonical server-notification path.
+    assert!(app.agents_overview.blank_sessions.contains_key(&fresh_id));
+    for notification in [
+        turn_started_notification(fresh_id, "fresh-turn"),
+        turn_completed_notification(fresh_id, "fresh-turn", TurnStatus::Completed),
+    ] {
+        app.handle_app_server_event(
+            &server,
+            AppServerEvent::ServerNotification(Box::new(notification)),
+        )
+        .await;
+    }
+    app.drain_active_thread_events(&mut tui).await?;
+    assert!(!app.agents_overview.blank_sessions.contains_key(&fresh_id));
     let resumed = server
         .resume_thread(
             &app.local_settings,
@@ -166,8 +201,11 @@ async fn wakeup_native_navigation_retains_side_and_reply_then_exit_unsubscribes(
                     .send((method.clone(), params))
                     .expect("request receiver");
                 async move {
-                    assert_eq!(method, "thread/unsubscribe");
-                    Some(json!({"result": {"status": "unsubscribed"}}))
+                    match method.as_str() {
+                        "turn/interrupt" => Some(json!({"result": {}})),
+                        "thread/unsubscribe" => Some(json!({"result": {"status": "unsubscribed"}})),
+                        other => panic!("unexpected lifecycle RPC: {other}"),
+                    }
                 }
             },
         )
@@ -203,13 +241,20 @@ async fn wakeup_native_navigation_retains_side_and_reply_then_exit_unsubscribes(
         control,
         AppRunControl::Exit(ExitReason::UserRequested)
     ));
-    let (_, params) = requests_rx.try_recv().expect("side unsubscribe");
-    assert_eq!(params.unwrap()["threadId"], side.to_string());
     assert!(!app.side_threads.contains_key(&side));
-    let remaining: Vec<_> = std::iter::from_fn(|| requests_rx.try_recv().ok())
-        .map(|(_, params)| params.unwrap()["threadId"].as_str().unwrap().to_owned())
-        .collect();
-    assert!(remaining.contains(&destination.to_string()));
+    let unsubscribed: std::collections::HashSet<_> =
+        std::iter::from_fn(|| requests_rx.try_recv().ok())
+            .filter(|(method, _)| method == "thread/unsubscribe")
+            .map(|(_, params)| params.unwrap()["threadId"].as_str().unwrap().to_owned())
+            .collect();
+    assert_eq!(
+        unsubscribed,
+        std::collections::HashSet::from([
+            original.to_string(),
+            side.to_string(),
+            destination.to_string(),
+        ])
+    );
     server.shutdown().await?;
     tokio::time::timeout(Duration::from_secs(5), remote).await???;
     Ok(())
