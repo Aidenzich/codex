@@ -135,6 +135,22 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> 
     let listed = app
         .start_turn_and_wait_for_completion(input("List pending wakeups"))
         .await?;
+    // Completion notifications contain a summary, not the full turn transcript.
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_stream_until_matching_notification("native wakeup item", |notification| {
+            notification.method == "item/completed"
+                && notification
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.pointer("/item/type"))
+                    .and_then(Value::as_str)
+                    == Some("wakeupStarted")
+        }),
+    )
+    .await??;
+    let marker_event: codex_app_server_protocol::ItemCompletedNotification =
+        serde_json::from_value(notification.params.expect("wakeup item parameters"))?;
     let followup: TurnCompletedNotification = timeout(
         DEFAULT_READ_TIMEOUT,
         app.read_notification("turn/completed"),
@@ -170,21 +186,18 @@ async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> 
     assert_eq!(pending[0]["task_id"], original["task_id"]);
     assert_eq!(pending[0]["due_at"], original["due_at"]);
     assert_eq!(pending[0]["originating_turn_id"], first.turn.id);
-    let marker = followup
-        .turn
-        .items
-        .iter()
-        .find_map(|item| match &item.payload {
-            codex_app_server_protocol::ThreadItemPayload::WakeupStarted {
-                task_id,
-                origin_turn_id,
-                resumed_turn_id,
-                instruction,
-                ..
-            } => Some((task_id, origin_turn_id, resumed_turn_id, instruction)),
-            _ => None,
-        })
-        .expect("same-thread native wakeup marker");
+    assert_eq!(marker_event.thread_id, thread_id);
+    assert_eq!(marker_event.turn_id, followup.turn.id);
+    let marker = match &marker_event.item.payload {
+        codex_app_server_protocol::ThreadItemPayload::WakeupStarted {
+            task_id,
+            origin_turn_id,
+            resumed_turn_id,
+            instruction,
+            ..
+        } => (task_id, origin_turn_id, resumed_turn_id, instruction),
+        _ => panic!("same-thread native wakeup marker"),
+    };
     assert_eq!(marker.0, original["task_id"].as_str().unwrap());
     assert_eq!(marker.1, &first.turn.id);
     assert_eq!(marker.2, &followup.turn.id);
