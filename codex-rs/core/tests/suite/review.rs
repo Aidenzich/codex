@@ -1067,6 +1067,7 @@ async fn review_uses_session_model_when_review_model_unset() {
         start_responses_server_with_sse(completed_sse(), /*expected_requests*/ 1).await;
     let codex_home = Arc::new(TempDir::new().unwrap());
     let test = test_codex()
+        .with_session_source(codex_protocol::protocol::SessionSource::Cli)
         .with_home(Arc::clone(&codex_home))
         .with_config(|config| {
             config.model = Some("gpt-5.4".to_string());
@@ -1112,6 +1113,9 @@ async fn review_uses_session_model_when_review_model_unset() {
         ["curr_time", "sleep"].map(|name| request.tool_by_name("clock", name).is_some()),
         [false, false]
     );
+    for name in ["schedule_wakeup", "list_wakeups", "cancel_wakeup"] {
+        assert!(request.tool_by_name("clock", name).is_none());
+    }
     assert!(!request.has_content_kinds(&["current_time.reminder"]));
 
     let _codex_home_guard = codex_home;

@@ -108,6 +108,7 @@ pub(crate) struct SessionState {
     pub(crate) reasoning_effort_pin: ReasoningEffortPin,
     /// Set under the state lock before shutdown takes the last warmup handle.
     pub(crate) shutting_down: bool,
+    pub(crate) wakeups: crate::session::wakeup::WakeupRegistry,
     /// Background model warmup scheduled at startup or while resuming an idle thread.
     pub(crate) startup_prewarm: Option<SessionStartupPrewarmHandle>,
     /// Retained after completion so later turns do not repeat speculative captures.
@@ -120,6 +121,17 @@ pub(crate) struct SessionState {
 }
 
 impl SessionState {
+    pub(crate) fn record_started_turn(
+        &mut self,
+        turn_id: &str,
+        attribution: Option<TurnAttribution>,
+    ) {
+        self.last_started_turn_id = Some(turn_id.to_owned());
+        if let Some(attribution) = attribution {
+            self.turn_attribution = Some(attribution);
+        }
+    }
+
     /// Create a new session state mirroring previous `State::default()` semantics.
     #[cfg(test)]
     pub(crate) fn new(session_configuration: SessionConfiguration) -> Self {
@@ -139,6 +151,11 @@ impl SessionState {
         context_window_id_generator: ContextWindowIdGenerator,
         history: ContextManager,
     ) -> Self {
+        let mut wakeups = crate::session::wakeup::WakeupRegistry::default();
+        wakeups.set_attached(matches!(
+            session_configuration.session_source,
+            codex_protocol::protocol::SessionSource::Cli
+        ));
         Self {
             active_disabled_plugin_ids: Vec::new(),
             persisted_dynamic_tools: Arc::clone(&session_configuration.dynamic_tools),
@@ -161,6 +178,7 @@ impl SessionState {
             async_compaction: crate::session::async_compaction::AsyncCompactionState::default(),
             reasoning_effort_pin: ReasoningEffortPin::Unset,
             shutting_down: false,
+            wakeups,
             startup_prewarm: None,
             shell_snapshot_prewarm: None,
             current_time_reminder: CurrentTimeReminderState::default(),

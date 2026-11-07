@@ -775,8 +775,14 @@ pub(crate) async fn record_pending_input(
             .await;
         }
         TurnInput::ResponseItem(item) => {
+            let wakeup = codex_protocol::items::parse_wakeup_started_message(&item.item);
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item])
                 .await;
+            if let Some(wakeup) = wakeup {
+                let item = TurnItem::WakeupStarted(wakeup);
+                sess.emit_turn_item_started(turn_context, &item).await;
+                sess.emit_turn_item_completed(turn_context, item).await;
+            }
         }
         TurnInput::FunctionCallOutput(item) => {
             sess.record_annotated_conversation_items(turn_context, model_info, vec![item.clone()])

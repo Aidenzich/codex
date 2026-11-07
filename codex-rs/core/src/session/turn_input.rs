@@ -741,10 +741,7 @@ impl Session {
         attribution: Option<codex_history::TurnAttribution>,
     ) {
         let mut state = self.state.lock().await;
-        state.last_started_turn_id = Some(turn_id.to_owned());
-        if let Some(attribution) = attribution {
-            state.turn_attribution = Some(attribution);
-        }
+        state.record_started_turn(turn_id, attribution);
     }
 
     #[expect(
@@ -755,11 +752,19 @@ impl Session {
         &self,
     ) -> Option<(Arc<tokio::sync::Mutex<TurnState>>, TurnStartOptions)> {
         let mut active_turn = self.active_turn.lock().await;
-        if active_turn.is_some() || self.outcome_handoffs_closed() {
+        if active_turn.is_some()
+            || self.outcome_handoffs_closed()
+            || self.state.lock().await.shutting_down
+        {
             return None;
         }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
-        if !has_trigger_turn
+        let has_due_wakeup = self
+            .next_wakeup_deadline()
+            .await
+            .is_some_and(|deadline| deadline <= tokio::time::Instant::now());
+        if !has_due_wakeup
+            && !has_trigger_turn
             && !self.has_outstanding_durable_sleep()
             && !self.should_wake_on_agent_messages().await
         {
@@ -801,10 +806,16 @@ impl Session {
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
         let state = self.state.lock().await;
         let configuration = &state.session_configuration;
-        if !has_trigger_turn
-            && !self.has_outstanding_durable_sleep()
-            && !TurnStartKind::Automatic
-                .permits_mode(configuration.step_settings.collaboration_mode.mode)
+        let has_due_wakeup = state
+            .wakeups
+            .next_deadline()
+            .is_some_and(|deadline| deadline <= tokio::time::Instant::now());
+        if state.shutting_down
+            || (!has_due_wakeup
+                && !has_trigger_turn
+                && !self.has_outstanding_durable_sleep()
+                && !TurnStartKind::Automatic
+                    .permits_mode(configuration.step_settings.collaboration_mode.mode))
         {
             *active = None;
             return None;

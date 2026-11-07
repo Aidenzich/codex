@@ -217,6 +217,10 @@ impl codex_analytics::TurnAnalyticsMetadata for TurnMetadataState {
 }
 
 impl TurnMetadataState {
+    pub(crate) fn thread_source(&self) -> Option<&ThreadSource> {
+        self.thread_source.as_ref()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         session_id: String,

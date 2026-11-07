@@ -15,6 +15,320 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn wakeup_terminal_captures_native_receipts_and_idle_composer() {
+    use crate::history_cell::HistoryCell;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::style::Style;
+    use ratatui::widgets::Block;
+    use ratatui::widgets::Paragraph;
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(None).await;
+    chat.bottom_pane.set_composer_text(
+        "Ask to list pending wakeups".into(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let task_id = "82b2f652-1712-4016-b430-8f895b50fc11";
+    let scheduled = serde_json::json!({"task_id": task_id, "due_at": "2026-11-07T01:01:00Z", "instruction": "Check the build result and report any failures.", "status": "scheduled"});
+    let mut due = scheduled.clone();
+    due["status"] = "due".into();
+    let cases = [
+        (
+            "list_wakeups",
+            serde_json::json!({"wakeups":[scheduled,due]}).to_string(),
+        ),
+        ("list_wakeups", r#"{"wakeups":[]}"#.into()),
+        (
+            "cancel_wakeup",
+            serde_json::json!({"task_id":task_id,"status":"cancelled"}).to_string(),
+        ),
+        (
+            "cancel_wakeup",
+            serde_json::json!({"task_id":task_id,"status":"not_pending"}).to_string(),
+        ),
+        (
+            "schedule_wakeup",
+            "At most 64 wakeups may be pending; cancel one first".into(),
+        ),
+    ];
+    for (name, width, foreground, background) in [
+        ("narrow_light", 42, Color::Black, Color::White),
+        ("wide_dark", 120, Color::White, Color::Black),
+    ] {
+        let mut lines = Vec::new();
+        for (tool, output) in &cases {
+            let cell = crate::tool_output::wakeup_receipt_cell(
+                tool,
+                Some("clock"),
+                &FunctionCallOutputBody::Text(output.clone()),
+            )
+            .unwrap();
+            lines.extend(cell.display_lines(width));
+            lines.push(Line::default());
+        }
+        lines.extend(
+            crate::tool_output::wakeup_started_cell(
+                task_id,
+                "Check the build result and report any failures.",
+            )
+            .display_lines(width),
+        );
+        lines.push(Line::default());
+        let transcript_height = u16::try_from(lines.len()).unwrap();
+        let height = transcript_height + chat.desired_height(width);
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Block::default().style(Style::default().fg(foreground).bg(background)),
+                    frame.area(),
+                );
+                frame.render_widget(
+                    Paragraph::new(lines.clone()),
+                    Rect::new(0, 0, width, transcript_height),
+                );
+                chat.render(
+                    Rect::new(0, transcript_height, width, height - transcript_height),
+                    frame.buffer_mut(),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Wakeup started"));
+        assert!(rendered.contains("Ask to list pending wakeups"));
+        assert!(rendered.contains("No pending wakeups"));
+        insta::assert_snapshot!(name, rendered);
+        let path =
+            std::env::temp_dir().join(format!("codex-wakeup-{}-{name}.svg", std::process::id()));
+        std::fs::write(&path, wakeup_buffer_svg(buffer, foreground, background)).unwrap();
+        println!("wakeup native TestBackend capture: {}", path.display());
+    }
+}
+
+fn wakeup_buffer_svg(
+    buffer: &ratatui::buffer::Buffer,
+    foreground: ratatui::style::Color,
+    background: ratatui::style::Color,
+) -> String {
+    use ratatui::style::Color;
+    fn color(value: Color, fallback: Color) -> String {
+        match value {
+            Color::Reset => color(fallback, Color::Black),
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Black => "#000000".into(),
+            Color::White => "#ffffff".into(),
+            Color::Red | Color::LightRed => "#bd2929".into(),
+            Color::Green | Color::LightGreen => "#26813a".into(),
+            Color::Yellow | Color::LightYellow => "#a07900".into(),
+            Color::Blue | Color::LightBlue => "#436fca".into(),
+            Color::Magenta | Color::LightMagenta => "#a74bb8".into(),
+            Color::Cyan | Color::LightCyan => "#17818d".into(),
+            Color::Gray => "#aaaaaa".into(),
+            Color::DarkGray => "#777777".into(),
+            Color::Indexed(index) => match index {
+                0..=15 => [
+                    "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080",
+                    "#c0c0c0", "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff",
+                    "#00ffff", "#ffffff",
+                ][usize::from(index)]
+                .into(),
+                16..=231 => {
+                    let cube = index - 16;
+                    let channel = |n: u8| if n == 0 { 0 } else { 55 + n * 40 };
+                    format!(
+                        "#{:02x}{:02x}{:02x}",
+                        channel(cube / 36),
+                        channel((cube / 6) % 6),
+                        channel(cube % 6)
+                    )
+                }
+                _ => {
+                    let value = 8 + (index - 232) * 10;
+                    format!("#{value:02x}{value:02x}{value:02x}")
+                }
+            },
+        }
+    }
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"><g font-family="monospace" font-size="14">"#,
+        buffer.area.width * 9,
+        buffer.area.height * 20,
+        buffer.area.width * 9,
+        buffer.area.height * 20
+    );
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, y)];
+            let text = cell
+                .symbol()
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let bold = cell.modifier.contains(ratatui::style::Modifier::BOLD);
+            let dim = cell.modifier.contains(ratatui::style::Modifier::DIM);
+            svg.push_str(&format!(r#"<rect x="{}" y="{}" width="9" height="20" fill="{}"/><text x="{}" y="{}" fill="{}" font-weight="{}" opacity="{}">{}</text>"#, x*9, y*20, color(cell.bg,background),x*9,y*20+15,color(cell.fg,foreground),if bold { "bold" } else { "normal" },if dim { "0.65" } else { "1" },text));
+        }
+    }
+    svg.push_str("</g></svg>");
+    svg
+}
+
+#[tokio::test]
+async fn wakeup_management_live_history_states_keep_composer_usable() {
+    let receipt = serde_json::json!({
+        "task_id": "82b2f652-1712-4016-b430-8f895b50fc11",
+        "instruction": "Check the build result and report any failures.",
+        "originating_turn_id": "initial-turn",
+        "scheduled_at": "2026-11-07T01:00:00Z",
+        "due_at": "2026-11-07T01:01:00Z", "status": "scheduled"
+    });
+    let mut due = receipt.clone();
+    due["status"] = "due".into();
+    let cases = [
+        ("schedule_wakeup", receipt.to_string(), "Wakeup scheduled"),
+        (
+            "list_wakeups",
+            serde_json::json!({"wakeups": [receipt, due]}).to_string(),
+            "waiting for the current turn",
+        ),
+        (
+            "list_wakeups",
+            r#"{"wakeups":[]}"#.into(),
+            "No pending wakeups",
+        ),
+        (
+            "cancel_wakeup",
+            r#"{"task_id":"task-1","status":"cancelled"}"#.into(),
+            "Wakeup cancelled",
+        ),
+        (
+            "cancel_wakeup",
+            r#"{"task_id":"task-1","status":"not_pending"}"#.into(),
+            "already started or unknown ID",
+        ),
+        (
+            "schedule_wakeup",
+            "At most 64 wakeups may be pending; cancel one first".into(),
+            "Wakeup request failed",
+        ),
+    ];
+    for (index, (name, output, expected)) in cases.into_iter().enumerate() {
+        let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+        let item = AppServerThreadItemPayload::FunctionCallOutput {
+            id: format!("management-{index}"),
+            name: name.into(),
+            namespace: Some("clock".into()),
+            output: FunctionCallOutputBody::Text(output),
+        };
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+                "thread-1".into(),
+                "initial-turn".into(),
+                item.clone(),
+                None,
+                0,
+            )),
+            None,
+        );
+        let live = drain_insert_history(&mut rx);
+        assert_eq!(live.len(), 1);
+        let text = lines_to_single_string(&live[0]);
+        assert!(text.contains(expected), "{text}");
+        assert!(text.contains("Ask to list pending wakeups"));
+        assert!(text.contains("resuming it does not restore jobs"));
+        chat.replay_thread_item(
+            item.clone(),
+            "initial-turn".into(),
+            ReplayKind::ResumeInitialMessages,
+        );
+        assert_eq!(drain_insert_history(&mut rx), live);
+        let projected = crate::thread_transcript::thread_items_to_transcript_cells(
+            None,
+            &chat.config.cwd,
+            [item],
+            crate::thread_transcript::RawReasoningVisibility::Hidden,
+            None,
+        );
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].transcript_lines(80), live[0]);
+        for width in [32, 120] {
+            assert!(
+                projected[0]
+                    .display_lines(width)
+                    .iter()
+                    .all(|line| line.width() <= usize::from(width))
+            );
+        }
+        chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(chat.bottom_pane.composer_text(), "a");
+    }
+}
+
+#[tokio::test]
+async fn wakeup_started_live_and_native_history_use_one_framework_cell() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let item = AppServerThreadItemPayload::from(codex_protocol::items::TurnItem::WakeupStarted(
+        codex_protocol::items::WakeupStartedItem {
+            id: "wakeup-start-1".into(),
+            task_id: "82b2f652-1712-4016-b430-8f895b50fc11".into(),
+            origin_turn_id: "origin-turn".into(),
+            resumed_turn_id: "followup-turn".into(),
+            instruction: "Check the build result and report any failures.".into(),
+        },
+    ));
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            "thread-1".into(),
+            "followup-turn".into(),
+            item.clone(),
+            None,
+            0,
+        )),
+        None,
+    );
+    let live = drain_insert_history(&mut rx);
+    assert_eq!(live.len(), 1);
+    let visible = lines_to_single_string(&live[0]);
+    assert_eq!(visible.matches("Wakeup started").count(), 1);
+    assert!(visible.contains("82b2f652-1712-4016-b430-8f895b50fc11"));
+    assert!(visible.contains("Check the build result"));
+    chat.replay_thread_item(
+        item.clone(),
+        "followup-turn".into(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    assert_eq!(drain_insert_history(&mut rx), live);
+    let projected = crate::thread_transcript::thread_items_to_transcript_cells(
+        None,
+        &chat.config.cwd,
+        [item],
+        crate::thread_transcript::RawReasoningVisibility::Hidden,
+        None,
+    );
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].transcript_lines(80), live[0]);
+    for width in [32, 120] {
+        let lines = projected[0].display_lines(width);
+        assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+        let text: String = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(text.matches("Wakeup started").count(), 1);
+        assert!(text.contains("Check the build"));
+    }
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), "");
+}
+
+#[tokio::test]
 async fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::CliDaybreak, /*enabled*/ false);

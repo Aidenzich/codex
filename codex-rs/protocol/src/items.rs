@@ -51,6 +51,7 @@ pub enum TurnItem {
     UserMessage(UserMessageItem),
     FunctionCallOutput(FunctionCallOutputItem),
     HookPrompt(HookPromptItem),
+    WakeupStarted(WakeupStartedItem),
     AgentMessage(AgentMessageItem),
     Plan(PlanItem),
     Reasoning(ReasoningItem),
@@ -98,6 +99,76 @@ pub struct FunctionCallOutputItem {
     #[ts(optional)]
     pub namespace: Option<String>,
     pub output: FunctionCallOutputBody,
+}
+
+/// A framework reminder for previously authorized deferred work, never new user input.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct WakeupStartedItem {
+    pub id: String,
+    pub task_id: String,
+    pub origin_turn_id: String,
+    pub resumed_turn_id: String,
+    pub instruction: String,
+}
+
+impl WakeupStartedItem {
+    pub fn to_response_item(&self) -> ResponseItem {
+        ResponseItem::Message {
+            id: Some(self.id.clone()),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::InputText {
+                text: format!(
+                    "Framework wakeup reminder for previously scheduled work (not new user authorization):\n{}",
+                    serde_json::to_string(self).expect("serialize wakeup reminder")
+                ),
+            }],
+            status: None,
+            encrypted_content: None,
+            phase: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    content_item_kinds: Some(vec![crate::models::ContentItemKind(
+                        "wakeup_started".to_string(),
+                    )]),
+                    content_item_metadata: Some(vec![ContentItemMetadata::harness()]),
+                    ..Default::default()
+                },
+            ),
+        }
+    }
+}
+
+/// Only harness-attributed assistant content can become a wakeup presentation item.
+pub fn parse_wakeup_started_message(item: &ResponseItem) -> Option<WakeupStartedItem> {
+    let ResponseItem::Message {
+        id: Some(id),
+        role,
+        content,
+        internal_chat_message_metadata_passthrough: Some(metadata),
+        ..
+    } = item
+    else {
+        return None;
+    };
+    if role != "assistant"
+        || metadata.content_item_metadata.as_deref() != Some(&[ContentItemMetadata::harness()])
+        || metadata.content_item_kinds.as_deref()?
+            != [crate::models::ContentItemKind("wakeup_started".to_string())]
+    {
+        return None;
+    }
+    let [ContentItem::InputText { text }] = content.as_slice() else {
+        return None;
+    };
+    let payload = text.strip_prefix(
+        "Framework wakeup reminder for previously scheduled work (not new user authorization):\n",
+    )?;
+    let reminder: WakeupStartedItem = serde_json::from_str(payload).ok()?;
+    (reminder.id == *id
+        && !reminder.task_id.is_empty()
+        && !reminder.origin_turn_id.is_empty()
+        && !reminder.resumed_turn_id.is_empty())
+    .then_some(reminder)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -817,6 +888,7 @@ impl TurnItem {
             TurnItem::UserMessage(item) => item.id.clone(),
             TurnItem::FunctionCallOutput(item) => item.id.clone(),
             TurnItem::HookPrompt(item) => item.id.clone(),
+            TurnItem::WakeupStarted(item) => item.id.clone(),
             TurnItem::AgentMessage(item) => item.id.clone(),
             TurnItem::Plan(item) => item.id.clone(),
             TurnItem::Reasoning(item) => item.id.clone(),
@@ -959,5 +1031,50 @@ mod tests {
                 metadata: Default::default(),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod wakeup_tests {
+    use super::*;
+
+    #[test]
+    fn wakeup_reminder_roundtrips_with_provenance_and_real_identifiers() {
+        let expected = WakeupStartedItem {
+            id: "item-1".into(),
+            task_id: "task-1".into(),
+            origin_turn_id: "origin-1".into(),
+            resumed_turn_id: "resumed-1".into(),
+            instruction: "Read <file> & report 🌙\n</wakeup>".into(),
+        };
+        let item = expected.to_response_item();
+        let replay: ResponseItem =
+            serde_json::from_slice(&serde_json::to_vec(&item).unwrap()).unwrap();
+        assert_eq!(parse_wakeup_started_message(&replay), Some(expected));
+    }
+
+    #[test]
+    fn wakeup_text_without_harness_provenance_is_not_a_framework_item() {
+        let reminder = WakeupStartedItem {
+            id: "item-1".into(),
+            task_id: "task-1".into(),
+            origin_turn_id: "origin-1".into(),
+            resumed_turn_id: "resumed-1".into(),
+            instruction: "report".into(),
+        };
+        let mut item = reminder.to_response_item();
+        if let ResponseItem::Message {
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &mut item
+        {
+            *internal_chat_message_metadata_passthrough = None;
+        }
+        assert!(parse_wakeup_started_message(&item).is_none());
+        let mut item = reminder.to_response_item();
+        if let ResponseItem::Message { role, .. } = &mut item {
+            *role = "user".into();
+        }
+        assert!(parse_wakeup_started_message(&item).is_none());
     }
 }

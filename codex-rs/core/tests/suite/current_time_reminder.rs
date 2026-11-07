@@ -388,6 +388,7 @@ async fn system_time_source_adds_current_time_reminder(clock_setup: ClockSetup) 
     )
     .await;
     let mut builder = test_codex()
+        .with_session_source(codex_protocol::protocol::SessionSource::Cli)
         .with_model_info_override("gpt-5.5", move |model_info| {
             if matches!(clock_setup, ClockSetup::Configured | ClockSetup::ModelTools) {
                 model_info
@@ -442,6 +443,12 @@ async fn system_time_source_adds_current_time_reminder(clock_setup: ClockSetup) 
             | ClockSetup::RequiredOff => [false, false],
         }
     );
+    for name in ["schedule_wakeup", "list_wakeups", "cancel_wakeup"] {
+        assert_eq!(
+            request.tool_by_name("clock", name).is_some(),
+            !matches!(clock_setup, ClockSetup::RequiredOff)
+        );
+    }
     if matches!(
         clock_setup,
         ClockSetup::OrdinaryEffort

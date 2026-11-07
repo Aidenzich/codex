@@ -316,9 +316,12 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         reporting.handoffs.close();
     }
     let startup_prewarm = {
+        // Serialize teardown with final task registration and due-work claim.
+        let _active_turn = sess.active_turn.lock().await;
         let mut state = sess.state.lock().await;
         // Stop admission and take the current warmup together so resume cannot replace it.
         state.shutting_down = true;
+        state.wakeups.clear();
         state.take_session_startup_prewarm()
     };
     if let Some(startup_prewarm) = startup_prewarm {
@@ -485,12 +488,47 @@ pub(super) async fn submission_loop(
     if let Some(updates) = &mut mailbox {
         updates.mark_changed();
     }
+    let wakeup_notify = sess.wakeup_notify().await;
+    // One in-loop preparation future, not a spawned task per timer. Continue
+    // receiving user input and shutdown while asynchronous context is prepared.
+    let mut pending_work_start: Option<futures::future::BoxFuture<'static, ()>> = None;
     loop {
+        // Register before examining the registry so a concurrent schedule cannot be lost.
+        let wakeup_changed = wakeup_notify.notified();
+        tokio::pin!(wakeup_changed);
+        wakeup_changed.as_mut().enable();
+        let wakeup_deadline = {
+            let active = sess.active_turn.lock().await;
+            let deadline = sess.next_wakeup_deadline().await;
+            deadline.filter(|deadline| {
+                pending_work_start.is_none()
+                    && (active.is_none() || *deadline > tokio::time::Instant::now())
+            })
+        };
         let sub = tokio::select! {
             biased;
             _ = sess.services.local_agent_runtime.shutdown.cancelled() => {
                 shutdown_received = shutdown(&sess, super::new_submission_id()).await;
                 break;
+            }
+            _ = async {
+                match &mut pending_work_start {
+                    Some(start) => start.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                pending_work_start = None;
+                continue;
+            }
+            _ = &mut wakeup_changed => continue,
+            _ = async {
+                match wakeup_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                pending_work_start = Some(sess.maybe_start_turn_for_pending_work());
+                continue;
             }
             update = async {
                 match &mut catalog_updates {
@@ -521,7 +559,9 @@ pub(super) async fn submission_loop(
                         if sess.features.enabled(Feature::WakeOnAgentMessages)
                             || sess.has_outstanding_durable_sleep()
                         {
-                            sess.maybe_start_turn_for_pending_work().await;
+                            if pending_work_start.is_none() {
+                                pending_work_start = Some(sess.maybe_start_turn_for_pending_work());
+                            }
                         }
                     }
                     Ok(false) => {}

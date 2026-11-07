@@ -197,7 +197,8 @@ fn without_thread_item_media(mut item: ThreadItemPayload) -> ThreadItemPayload {
                 result: String::new(),
             };
         }
-        ThreadItemPayload::HookPrompt { .. }
+        ThreadItemPayload::WakeupStarted { .. }
+        | ThreadItemPayload::HookPrompt { .. }
         | ThreadItemPayload::AgentMessage { .. }
         | ThreadItemPayload::Plan { .. }
         | ThreadItemPayload::Reasoning { .. }

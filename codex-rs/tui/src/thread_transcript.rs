@@ -289,12 +289,26 @@ fn item_to_cells(
                 ));
             }
         }
+        ThreadItemPayload::WakeupStarted {
+            task_id,
+            instruction,
+            ..
+        } => cells.push(Arc::new(crate::tool_output::wakeup_started_cell(
+            &task_id,
+            &instruction,
+        ))),
         ThreadItemPayload::FunctionCallOutput {
             name,
             namespace,
             output,
             ..
         } => {
+            if let Some(cell) =
+                crate::tool_output::wakeup_receipt_cell(&name, namespace.as_deref(), &output)
+            {
+                cells.push(Arc::new(cell));
+                return cells;
+            }
             if let Some((source_thread_id, prompt)) =
                 crate::dynamic_tools::parse_delegated_tool_output(
                     &name,

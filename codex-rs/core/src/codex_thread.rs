@@ -225,6 +225,11 @@ pub struct BackgroundTerminalInfo {
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// Publish the host's actual subscription state. Detach revokes unclaimed wakeups.
+    pub async fn set_wakeup_host_attached(&self, attached: bool) {
+        self.session.set_wakeup_attached(attached).await;
+    }
+
     pub(crate) fn new(
         session: Arc<Session>,
         io: SessionIo,

@@ -578,6 +578,12 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        if let Some(wakeup) = codex_protocol::items::parse_wakeup_started_message(item) {
+            self.push_item_in_current_turn(ThreadItemPayload::from(
+                codex_protocol::items::TurnItem::WakeupStarted(wakeup),
+            ));
+            return;
+        }
         let codex_protocol::models::ResponseItem::Message {
             role, content, id, ..
         } = item
@@ -791,7 +797,8 @@ impl ThreadHistoryBuilder {
         );
         let should_upsert = match item {
             codex_protocol::items::TurnItem::Plan(plan) => !plan.text.is_empty(),
-            codex_protocol::items::TurnItem::HookPrompt(_)
+            codex_protocol::items::TurnItem::WakeupStarted(_)
+            | codex_protocol::items::TurnItem::HookPrompt(_)
             | codex_protocol::items::TurnItem::FunctionCallOutput(_)
             | codex_protocol::items::TurnItem::CommandExecution(_)
             | codex_protocol::items::TurnItem::DynamicToolCall(_)
@@ -5489,6 +5496,48 @@ mod tests {
                 duration_ms: Some(10_000),
             }]
         );
+    }
+
+    #[test]
+    fn wakeup_history_reconstructs_same_typed_marker_without_model_spoof() {
+        let marker = codex_protocol::items::WakeupStartedItem {
+            id: "item-w".into(),
+            task_id: "task-w".into(),
+            origin_turn_id: "turn-origin".into(),
+            resumed_turn_id: "turn-w".into(),
+            instruction: "<read> & 測試".into(),
+        };
+        let raw = marker.to_response_item();
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                turn_id: "turn-w".into(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::ResponseItem(raw.into()),
+        ];
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 1);
+        assert_eq!(
+            turns[0].items[0].payload,
+            ThreadItemPayload::from(CoreTurnItem::WakeupStarted(marker.clone()))
+        );
+        let mut spoof = marker.to_response_item();
+        if let codex_protocol::models::ResponseItem::Message {
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &mut spoof
+        {
+            *internal_chat_message_metadata_passthrough = None;
+        }
+        let spoof_items = vec![items[0].clone(), RolloutItem::ResponseItem(spoof.into())];
+        let turns = build_turns_from_rollout_items(&spoof_items);
+        assert!(turns[0].items.is_empty());
     }
 
     #[test]

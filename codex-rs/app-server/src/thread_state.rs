@@ -360,6 +360,7 @@ struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
     has_connections_watcher: watch::Sender<bool>,
+    wakeup_thread: Weak<CodexThread>,
 }
 
 impl Default for ThreadEntry {
@@ -374,10 +375,16 @@ impl ThreadEntry {
             state,
             connection_ids: HashSet::new(),
             has_connections_watcher: watch::channel(false).0,
+            wakeup_thread: Weak::new(),
         }
     }
 
-    fn update_has_connections(&self) {
+    async fn update_has_connections(&self) {
+        if let Some(thread) = self.wakeup_thread.upgrade() {
+            thread
+                .set_wakeup_host_attached(!self.connection_ids.is_empty())
+                .await;
+        }
         let _ = self.has_connections_watcher.send_if_modified(|current| {
             let prev = *current;
             *current = !self.connection_ids.is_empty();
@@ -556,10 +563,13 @@ impl ThreadStateManager {
         let thread_state = {
             let mut state = self.state.lock().await;
             self.unregister_listener_command_tx(thread_id);
-            let thread_state = state
-                .threads
-                .remove(&thread_id)
-                .map(|thread_entry| thread_entry.state);
+            let thread_state = state.threads.remove(&thread_id);
+            if let Some(entry) = &thread_state
+                && let Some(thread) = entry.wakeup_thread.upgrade()
+            {
+                thread.set_wakeup_host_attached(false).await;
+            }
+            let thread_state = thread_state.map(|entry| entry.state);
             state.thread_ids_by_connection.retain(|_, thread_ids| {
                 thread_ids.remove(&thread_id);
                 !thread_ids.is_empty()
@@ -600,6 +610,11 @@ impl ThreadStateManager {
         {
             return false;
         }
+        if let Some(entry) = state.threads.get(&thread_id)
+            && let Some(thread) = entry.wakeup_thread.upgrade()
+        {
+            thread.set_wakeup_host_attached(false).await;
+        }
         state.threads.remove(&thread_id);
         self.unregister_listener_command_tx(thread_id);
         thread_state.clear_listener();
@@ -609,6 +624,11 @@ impl ThreadStateManager {
     pub(crate) async fn clear_all_listeners(&self) {
         let thread_states = {
             let state = self.state.lock().await;
+            for entry in state.threads.values() {
+                if let Some(thread) = entry.wakeup_thread.upgrade() {
+                    thread.set_wakeup_host_attached(false).await;
+                }
+            }
             state
                 .threads
                 .iter()
@@ -653,7 +673,7 @@ impl ThreadStateManager {
             }
             if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
                 thread_entry.connection_ids.remove(&connection_id);
-                thread_entry.update_has_connections();
+                thread_entry.update_has_connections().await;
             }
         };
 
@@ -675,6 +695,7 @@ impl ThreadStateManager {
         &self,
         thread_id: ThreadId,
         candidate: &ListenerStateCandidate,
+        wakeup_thread: &Arc<CodexThread>,
         connection_ids: &[ConnectionId],
         install: impl FnOnce(bool) -> Result<T, E>,
     ) -> Result<Option<(T, watch::Receiver<bool>, bool)>, E> {
@@ -695,6 +716,12 @@ impl ThreadStateManager {
             .any(|connection_id| live_connections.contains_key(connection_id));
         let installed = install(attached)?;
         let entry = slot.or_insert_with(|| ThreadEntry::new(Arc::clone(candidate.state())));
+        if let Some(previous) = entry.wakeup_thread.upgrade()
+            && !Arc::ptr_eq(&previous, wakeup_thread)
+        {
+            previous.set_wakeup_host_attached(false).await;
+        }
+        entry.wakeup_thread = Arc::downgrade(wakeup_thread);
         for &connection_id in connection_ids {
             if live_connections.contains_key(&connection_id) {
                 thread_ids_by_connection
@@ -704,7 +731,7 @@ impl ThreadStateManager {
                 entry.connection_ids.insert(connection_id);
             }
         }
-        entry.update_has_connections();
+        entry.update_has_connections().await;
         Ok(Some((
             installed,
             entry.has_connections_watcher.subscribe(),
@@ -728,7 +755,7 @@ impl ThreadStateManager {
             .insert(thread_id);
         let thread_entry = state.threads.entry(thread_id).or_default();
         thread_entry.connection_ids.insert(connection_id);
-        thread_entry.update_has_connections();
+        thread_entry.update_has_connections().await;
         true
     }
 
@@ -743,7 +770,7 @@ impl ThreadStateManager {
             for thread_id in &thread_ids {
                 if let Some(thread_entry) = state.threads.get_mut(thread_id) {
                     thread_entry.connection_ids.remove(&connection_id);
-                    thread_entry.update_has_connections();
+                    thread_entry.update_has_connections().await;
                 }
             }
             thread_ids

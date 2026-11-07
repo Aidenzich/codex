@@ -19,6 +19,113 @@ use textwrap::WordSplitter;
 const PREVIEW_LINES: usize = 3;
 const MAX_PREVIEW_LINE_BYTES: usize = 16 * 1024;
 
+const WAKEUP_HINT: &str = "Ask to list pending wakeups or cancel an ID. Pending work needs a live client with this conversation open. Leaving or closing the last one cancels pending work; resuming it does not restore jobs.";
+
+/// Render immutable operation receipts, never a client-side view of the registry.
+pub(crate) fn wakeup_receipt_cell(
+    name: &str,
+    namespace: Option<&str>,
+    output: &codex_protocol::models::FunctionCallOutputBody,
+) -> Option<crate::history_cell::PrefixedWrappedHistoryCell> {
+    if namespace != Some("clock")
+        || !matches!(name, "schedule_wakeup" | "list_wakeups" | "cancel_wakeup")
+    {
+        return None;
+    }
+    let text = output.to_text().unwrap_or_default();
+    let value = serde_json::from_str::<serde_json::Value>(&text).ok();
+    let mut lines = Vec::new();
+    let rendered = value.as_ref().is_some_and(|value| match name {
+        "schedule_wakeup" => append_wakeup_receipt(&mut lines, value),
+        "list_wakeups" => {
+            let Some(wakeups) = value.get("wakeups").and_then(serde_json::Value::as_array) else {
+                return false;
+            };
+            lines.push(Line::from("Pending wakeups at this check".bold()));
+            if wakeups.is_empty() {
+                lines.push(Line::from("No pending wakeups."));
+            }
+            for wakeup in wakeups {
+                if !append_wakeup_receipt(&mut lines, wakeup) {
+                    return false;
+                }
+            }
+            true
+        }
+        "cancel_wakeup" => {
+            let Some(id) = value.get("task_id").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            let status = match value.get("status").and_then(serde_json::Value::as_str) {
+                Some("cancelled") => "Wakeup cancelled",
+                Some("not_pending") => "Wakeup not pending (already started or unknown ID)",
+                _ => return false,
+            };
+            lines.push(Line::from(status.bold()));
+            lines.push(Line::from(format!("ID: {id}")));
+            true
+        }
+        _ => false,
+    });
+    if !rendered {
+        lines.clear();
+        lines.push(Line::from("Wakeup request failed".bold()));
+        if value.is_none() && !text.trim().is_empty() {
+            lines.extend(text.lines().map(|line| Line::from(line.to_owned())));
+        } else {
+            lines.push(Line::from("The wakeup receipt could not be read. Ask to list pending wakeups before retrying."));
+        }
+        lines.push(Line::from(
+            "Check the delay, instruction and task ID, or cancel a pending wakeup and retry.",
+        ));
+    }
+    lines.push(Line::from(WAKEUP_HINT.dim()));
+    Some(crate::history_cell::PrefixedWrappedHistoryCell::new(
+        lines,
+        Line::from("◦ ".cyan()),
+        Line::from("  "),
+    ))
+}
+
+fn append_wakeup_receipt(lines: &mut Vec<Line<'static>>, value: &serde_json::Value) -> bool {
+    let Some(id) = value.get("task_id").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(due) = value.get("due_at").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(instruction) = value.get("instruction").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let status = match value.get("status").and_then(serde_json::Value::as_str) {
+        Some("scheduled") => "Wakeup scheduled",
+        Some("due") => "Wakeup due — waiting for the current turn to finish",
+        _ => return false,
+    };
+    lines.push(Line::from(status.bold()));
+    lines.push(Line::from(format!("ID: {id}")));
+    lines.push(Line::from(format!("Due: {due}")));
+    lines.extend(instruction.lines().map(|line| Line::from(line.to_owned())));
+    true
+}
+
+/// A framework marker, distinct from assistant prose and from a new user request.
+pub(crate) fn wakeup_started_cell(
+    task_id: &str,
+    instruction: &str,
+) -> crate::history_cell::PrefixedWrappedHistoryCell {
+    let mut lines = vec![
+        Line::from("Wakeup started".bold()),
+        Line::from(format!("ID: {task_id}")),
+    ];
+    lines.extend(instruction.lines().map(|line| Line::from(line.to_owned())));
+    crate::history_cell::PrefixedWrappedHistoryCell::new(
+        lines,
+        Line::from("◦ ".cyan()),
+        Line::from("  "),
+    )
+}
+
 /// Render a bounded preview with source ranges retained for transcript selection and copying.
 pub(crate) fn tool_output_hyperlink_preview<'a>(
     lines: impl IntoIterator<Item = Line<'a>>,

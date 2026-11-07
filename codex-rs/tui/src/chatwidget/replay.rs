@@ -415,13 +415,25 @@ impl ChatWidget {
             ThreadItemPayload::ContextCompaction { id } => {
                 self.on_context_compaction_completed(&id, from_replay);
             }
+            ThreadItemPayload::WakeupStarted {
+                task_id,
+                instruction,
+                ..
+            } => self.add_to_history(crate::tool_output::wakeup_started_cell(
+                &task_id,
+                &instruction,
+            )),
             ThreadItemPayload::FunctionCallOutput {
                 name,
                 namespace,
                 output,
                 ..
             } => {
-                if let Some((source_thread_id, prompt)) =
+                if let Some(cell) =
+                    crate::tool_output::wakeup_receipt_cell(&name, namespace.as_deref(), &output)
+                {
+                    self.add_to_history(cell);
+                } else if let Some((source_thread_id, prompt)) =
                     crate::dynamic_tools::parse_delegated_tool_output(
                         &name,
                         namespace.as_deref(),

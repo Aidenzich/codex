@@ -263,3 +263,128 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
     );
     Ok(())
 }
+
+#[test_case(false, false; "last_unsubscribe_clears_before_unload")]
+#[test_case(true, false; "last_disconnect_clears_before_unload")]
+#[test_case(false, true; "one_of_two_clients_preserves_pending")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wakeup_actual_subscriber_transitions_revoke_only_after_last_detach(
+    disconnect: bool,
+    keep_second: bool,
+) -> Result<()> {
+    use codex_core::TurnInputRequest;
+    use codex_protocol::protocol::{EventMsg, SessionSource};
+    use codex_protocol::user_input::UserInput;
+    use core_test_support::{responses, wait_for_event};
+    use serde_json::json;
+    let server = responses::start_mock_server().await;
+    let schedule = responses::sse(vec![
+        responses::ev_function_call_with_namespace(
+            "schedule",
+            "clock",
+            "schedule_wakeup",
+            &json!({"duration_ms":250,"instruction":"subscriber follow-up"}).to_string(),
+        ),
+        responses::ev_completed("scheduled"),
+    ]);
+    let answer = |id: &str| {
+        responses::sse(vec![
+            responses::ev_assistant_message(id, "done"),
+            responses::ev_completed(id),
+        ])
+    };
+    let list = responses::sse(vec![
+        responses::ev_function_call_with_namespace("list", "clock", "list_wakeups", "{}"),
+        responses::ev_completed("listed"),
+    ]);
+    let sequence = if keep_second {
+        vec![schedule, answer("initial"), answer("resumed")]
+    } else {
+        vec![schedule, answer("initial"), list, answer("list-answer")]
+    };
+    let mock = responses::mount_sse_sequence(&server, sequence).await;
+    let test = test_codex()
+        .with_session_source(SessionSource::VSCode)
+        .build_with_auto_env(&server)
+        .await?;
+    let thread_id = test.session_configured.thread_id;
+    let manager = ThreadStateManager::new();
+    let first = ConnectionId(71);
+    let second = ConnectionId(72);
+    manager
+        .connection_initialized(first, ConnectionCapabilities::default())
+        .await;
+    manager
+        .connection_initialized(second, ConnectionCapabilities::default())
+        .await;
+    let candidate = manager.created_listener_state(thread_id).await;
+    let candidate_lock = candidate.state().lock().await;
+    let attached = if keep_second {
+        vec![first, second]
+    } else {
+        vec![first]
+    };
+    manager
+        .subscribe_and_install_listener(thread_id, &candidate, &test.codex, &attached, |_| {
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+        .context("listener install")?;
+    drop(candidate_lock);
+    let input = || {
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "schedule and finish".into(),
+            text_elements: vec![],
+        }])
+    };
+    test.codex.start_or_steer_turn(input()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let receipt = mock
+        .function_call_output_text("schedule")
+        .context("native schedule receipt")?;
+    let receipt: serde_json::Value = serde_json::from_str(&receipt)?;
+    assert!(receipt["task_id"].as_str().is_some_and(|id| !id.is_empty()));
+    if disconnect {
+        manager.remove_connection(first).await;
+    } else {
+        assert!(
+            manager
+                .unsubscribe_connection_from_thread(thread_id, first)
+                .await
+        );
+    }
+    if keep_second {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        assert_eq!(mock.requests().len(), 3);
+    } else {
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(mock.requests().len(), 2);
+        // A later attachment enables new work but cannot restore the cleared job.
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, second)
+                .await
+        );
+        test.codex.start_or_steer_turn(input()).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let output: serde_json::Value = serde_json::from_str(
+            &mock
+                .function_call_output_text("list")
+                .context("native pending read-back")?,
+        )?;
+        assert_eq!(output["wakeups"], json!([]));
+        assert_eq!(mock.requests().len(), 4);
+    }
+    manager.clear_all_listeners().await;
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
