@@ -540,10 +540,20 @@ async fn wakeup_followup_obeys_current_write_permissions(during_preparation: boo
     let (output, _) = request
         .custom_tool_call_output_content_and_success("forbidden-write")
         .expect("actual rejected native patch output");
-    assert!(output.unwrap().contains(
-        "patch rejected: writing outside of the project; rejected by user approval settings"
-    ));
-    assert!(!test.workspace_path("forbidden.txt").exists());
+    let output = output.expect("actual native patch denial text");
+    assert!(
+        !test.workspace_path("forbidden.txt").exists(),
+        "read-only follow-up wrote forbidden.txt; native output: {output}"
+    );
+    assert!(
+        output.contains(
+            "patch rejected: writing is blocked by read-only sandbox; rejected by user approval settings"
+        ),
+        "expected read-only patch denial, got: {output}"
+    );
+    eprintln!(
+        "read-only wakeup (during_preparation={during_preparation}): {output}; forbidden.txt absent"
+    );
     test.codex.shutdown_and_wait().await?;
     Ok(())
 }
