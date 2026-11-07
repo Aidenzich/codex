@@ -2162,3 +2162,116 @@ async fn stream_recovery_restores_previous_status_header() {
     assert!(chat.bottom_pane.status_widget().is_none());
     assert!(chat.active_cell_is_stream_tail());
 }
+
+#[tokio::test]
+async fn wakeup_terminal_provider_failure_renders_normal_error_and_ready_composer() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::widgets::Paragraph;
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(None).await;
+    let task_id = "82b2f652-1712-4016-b430-8f895b50fc11";
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: "thread-1".into(),
+            turn: app_server_turn("failed-wakeup", AppServerTurnStatus::InProgress, None, None),
+        }),
+        None,
+    );
+    drain_insert_history(&mut rx);
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            "thread-1".into(),
+            "failed-wakeup".into(),
+            AppServerThreadItemPayload::from(codex_protocol::items::TurnItem::WakeupStarted(
+                codex_protocol::items::WakeupStartedItem {
+                    id: "wakeup-start-1".into(),
+                    task_id: task_id.into(),
+                    origin_turn_id: "schedule-turn".into(),
+                    resumed_turn_id: "failed-wakeup".into(),
+                    instruction: "Check the build result.".into(),
+                },
+            )),
+            None,
+            0,
+        )),
+        None,
+    );
+    let error = AppServerTurnError {
+        misalignment: None,
+        message: "Quota exceeded. Check your plan and billing details.".into(),
+        codex_error_info: Some(CodexErrorInfo::UsageLimitExceeded),
+        additional_details: None,
+    };
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: error.clone(),
+            will_retry: false,
+            thread_id: "thread-1".into(),
+            turn_id: "failed-wakeup".into(),
+        }),
+        None,
+    );
+    let history = drain_insert_history(&mut rx);
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: "thread-1".into(),
+            turn: app_server_turn(
+                "failed-wakeup",
+                AppServerTurnStatus::Failed,
+                None,
+                Some(error),
+            ),
+        }),
+        None,
+    );
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "normal failure is shown once"
+    );
+    assert!(!chat.bottom_pane.is_task_running());
+    chat.bottom_pane
+        .set_composer_text("Recover normally".into(), Vec::new(), Vec::new());
+    let lines: Vec<_> = history.into_iter().flatten().collect();
+    let text = lines_to_single_string(&lines);
+    assert_eq!(text.matches("Wakeup started").count(), 1);
+    assert_eq!(text.matches("Quota exceeded").count(), 1);
+    assert!(text.contains(task_id));
+    let width = 120;
+    let transcript_height = u16::try_from(lines.len()).unwrap();
+    let height = transcript_height + chat.desired_height(width);
+    let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| {
+            frame.render_widget(
+                Paragraph::new(lines.clone()),
+                Rect::new(0, 0, width, transcript_height),
+            );
+            chat.render(
+                Rect::new(0, transcript_height, width, height - transcript_height),
+                frame.buffer_mut(),
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Quota exceeded"));
+    assert!(rendered.contains("Recover normally"));
+    let path = std::env::temp_dir().join(format!(
+        "codex-wakeup-{}-terminal-provider-failure.svg",
+        std::process::id()
+    ));
+    std::fs::write(&path, wakeup_buffer_svg(buffer, Color::White, Color::Black)).unwrap();
+    println!(
+        "wakeup native terminal provider failure capture: {}",
+        path.display()
+    );
+}

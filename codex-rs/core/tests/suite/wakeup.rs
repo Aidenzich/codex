@@ -1,4 +1,7 @@
 //! Native wakeups use ordinary turn ownership and retain typed harness attribution.
+#[path = "wakeup_admission.rs"]
+mod admission;
+
 use anyhow::Result;
 use codex_core::TurnInputRequest;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -554,6 +557,116 @@ async fn wakeup_followup_obeys_current_write_permissions(during_preparation: boo
     eprintln!(
         "read-only wakeup (during_preparation={during_preparation}): {output}; forbidden.txt absent"
     );
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
+// A consumed timer must never become a retry queue when the ordinary provider turn fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wakeup_terminal_provider_failure_is_visible_once_and_user_can_recover() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            schedule(150),
+            answer("initial", "Scheduled."),
+            responses::sse_failed(
+                "failed-wakeup",
+                "insufficient_quota",
+                "You exceeded your current quota, please check your plan and billing details.",
+            ),
+            answer("recovery", "Recovered after the failed wakeup."),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_session_source(SessionSource::Cli)
+        .build_with_auto_env(&server)
+        .await?;
+    test.codex.start_or_steer_turn(input()).await?;
+    let EventMsg::TurnComplete(initial) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    let mut marker = None;
+    let mut error_count = 0;
+    let failed = loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ItemCompleted(event) => {
+                if let TurnItem::WakeupStarted(item) = event.item {
+                    assert!(marker.replace(item).is_none(), "one automatic dispatch");
+                }
+            }
+            EventMsg::Error(error) => {
+                error_count += 1;
+                assert_eq!(
+                    error.message,
+                    "Quota exceeded. Check your plan and billing details."
+                );
+                assert_eq!(
+                    error.codex_error_info,
+                    Some(codex_protocol::protocol::CodexErrorInfo::UsageLimitExceeded)
+                );
+            }
+            EventMsg::TurnComplete(turn) => break turn,
+            _ => {}
+        }
+    };
+    let marker = marker.expect("admitted wakeup before provider failure");
+    assert_eq!(marker.origin_turn_id, initial.turn_id);
+    assert_ne!(marker.resumed_turn_id, initial.turn_id);
+    assert_eq!(failed.turn_id, marker.resumed_turn_id);
+    let terminal_error = failed
+        .error
+        .expect("failed outcome on normal turn completion");
+    assert_eq!(
+        terminal_error.message,
+        "Quota exceeded. Check your plan and billing details."
+    );
+    assert_eq!(
+        terminal_error.codex_error_info,
+        Some(codex_protocol::protocol::CodexErrorInfo::UsageLimitExceeded)
+    );
+    assert_eq!(error_count, 1);
+    assert_eq!(mock.requests().len(), 3);
+    assert!(mock.requests()[2].body_contains_text(&marker.task_id));
+    // Observe beyond the original delay again: neither the timer nor the provider retries.
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(mock.requests().len(), 3);
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Recover normally after the failed wakeup.".into(),
+            text_elements: vec![],
+        }]))
+        .await?;
+    let mut recovered = false;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ItemCompleted(event) => assert!(
+                !matches!(event.item, TurnItem::WakeupStarted(_)),
+                "no timer redispatch during recovery"
+            ),
+            EventMsg::Error(error) => panic!("recovery failed: {error:?}"),
+            EventMsg::AgentMessage(message) => {
+                recovered |= message.message == "Recovered after the failed wakeup."
+            }
+            EventMsg::TurnComplete(turn) => {
+                assert_ne!(turn.turn_id, marker.resumed_turn_id);
+                assert!(
+                    turn.error.is_none(),
+                    "ordinary recovery completes successfully"
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(recovered);
+    assert_eq!(mock.requests().len(), 4);
     test.codex.shutdown_and_wait().await?;
     Ok(())
 }

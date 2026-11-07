@@ -81,6 +81,31 @@ impl PendingWakeup {
     }
 }
 
+/// Move-only, process-local handoff for replacement of the same live thread.
+/// It is deliberately absent from rollout and resume serialization.
+#[derive(Default)]
+pub struct WakeupReplacement {
+    pending: BTreeMap<String, PendingWakeup>,
+}
+
+impl WakeupReplacement {
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn originating_turn_ids(&self) -> std::collections::HashSet<String> {
+        self.pending
+            .values()
+            .map(|entry| entry.originating_turn_id.clone())
+            .collect()
+    }
+
+    pub fn retain_originating_turns(&mut self, retained: &std::collections::HashSet<String>) {
+        self.pending
+            .retain(|_, entry| retained.contains(&entry.originating_turn_id));
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct WakeupRegistry {
     pending: BTreeMap<String, PendingWakeup>,
@@ -96,10 +121,25 @@ impl WakeupRegistry {
 
     pub(crate) fn set_attached(&mut self, attached: bool) {
         self.attached = attached;
-        if !attached {
+        if !self.attached {
             self.pending.clear();
         }
         self.notify.notify_one();
+    }
+
+    fn take_for_replacement(&mut self) -> WakeupReplacement {
+        self.attached = false;
+        self.notify.notify_one();
+        WakeupReplacement {
+            pending: std::mem::take(&mut self.pending),
+        }
+    }
+
+    fn restore_replacement(&mut self, replacement: WakeupReplacement) {
+        if self.attached {
+            self.pending.extend(replacement.pending);
+            self.notify.notify_one();
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -200,6 +240,21 @@ pub(crate) fn wakeup_configuration_is_current(
 }
 
 impl Session {
+    pub(crate) async fn take_wakeups_for_replacement(&self) -> WakeupReplacement {
+        let _active = self.active_turn.lock().await;
+        let mut state = self.state.lock().await;
+        state.shutting_down = true;
+        state.wakeups.take_for_replacement()
+    }
+
+    pub(crate) async fn restore_wakeups_after_replacement(&self, replacement: WakeupReplacement) {
+        let _active = self.active_turn.lock().await;
+        let mut state = self.state.lock().await;
+        if !state.shutting_down {
+            state.wakeups.restore_replacement(replacement);
+        }
+    }
+
     /// The task admission owner must hold active_turn before taking this lock.
     /// Keep it through claim and synchronous task registration.
     pub(crate) async fn wakeup_admission_state(
@@ -258,6 +313,67 @@ mod tests {
         let mut registry = WakeupRegistry::default();
         registry.set_attached(true);
         registry
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wakeup_replacement_moves_only_retained_origins_without_rebasing_deadline() {
+        let mut source = live_registry();
+        let keep = source
+            .schedule(100, "keep".into(), "turn-a".into())
+            .unwrap();
+        source
+            .schedule(200, "discard".into(), "turn-b".into())
+            .unwrap();
+        let deadline = source.next_deadline().unwrap();
+        let mut replacement = source.take_for_replacement();
+        assert!(source.claim_due(deadline).is_none());
+        replacement.retain_originating_turns(&std::collections::HashSet::from(["turn-a".into()]));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let mut destination = live_registry();
+        destination.restore_replacement(replacement);
+        assert_eq!(destination.list(), vec![keep.clone()]);
+        assert_eq!(destination.next_deadline(), Some(deadline));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        assert_eq!(
+            destination.claim_due(Instant::now()).unwrap().task_id,
+            keep.task_id
+        );
+        assert!(destination.claim_due(Instant::now()).is_none());
+        destination.clear();
+        assert!(destination.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn wakeup_replacement_fences_old_session_before_shutdown() {
+        let (session, _) = crate::session::tests::make_session_and_context().await;
+        session.set_wakeup_attached(true).await;
+        session
+            .schedule_wakeup(100, "keep".into(), "turn-a".into())
+            .await
+            .unwrap();
+        let replacement = session.take_wakeups_for_replacement().await;
+        assert!(!replacement.is_empty());
+        session.set_wakeup_attached(true).await;
+        assert!(
+            session
+                .schedule_wakeup(1, "late".into(), "turn-b".into())
+                .await
+                .is_err()
+        );
+        assert!(session.list_wakeups().await.is_empty());
+        assert!(session.next_wakeup_deadline().await.is_none());
+    }
+
+    #[test]
+    fn wakeup_replacement_requires_attached_destination() {
+        let mut source = live_registry();
+        source
+            .schedule(100, "keep".into(), "turn-a".into())
+            .unwrap();
+        let mut destination = WakeupRegistry::default();
+        destination.restore_replacement(source.take_for_replacement());
+        destination.set_attached(true);
+        assert!(destination.list().is_empty());
     }
 
     #[tokio::test]

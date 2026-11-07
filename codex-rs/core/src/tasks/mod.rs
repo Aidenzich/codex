@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use codex_async_utils::OrCancelExt;
 use codex_diagnostics::Gauge;
 use codex_exec_server::ExecutorCapabilityDiscoveryV2Cache;
 use codex_extension_api::ThreadIdleCause;
@@ -290,7 +291,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
-        self.start_task_reserved(turn_context, input, task, None)
+        self.start_task_reserved(turn_context, input, task, None, None)
             .await;
     }
 
@@ -306,6 +307,7 @@ impl Session {
         mut input: Vec<TurnInput>,
         task: T,
         reservation: Option<Arc<tokio::sync::Mutex<crate::state::TurnState>>>,
+        pending_work_trigger: Option<String>,
     ) -> bool {
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
@@ -403,6 +405,7 @@ impl Session {
         if state.shutting_down {
             return true;
         }
+        let mut claimed_wakeup = false;
         if reservation.is_some() {
             if !crate::session::wakeup::wakeup_configuration_is_current(&turn_context, &state) {
                 // Keep the same reservation, its queued input and every unclaimed
@@ -421,15 +424,22 @@ impl Session {
                 input.push(TurnInput::ResponseItem(
                     codex_history::ResponseItemEnvelope::new(reminder.to_response_item()),
                 ));
-                turn_context
-                    .turn_metadata_state
-                    .set_turn_trigger("wakeup".to_string());
+                claimed_wakeup = true;
             }
         }
         // Cancellation or detach may have removed all timer work during preparation.
         if reservation.is_some() && input.is_empty() && !has_pending_input {
             *active = None;
             return true;
+        }
+        // Trigger metadata is write-once. Choose it only after due work is claimed,
+        // so a previous user trigger cannot mask a synthetic wakeup turn.
+        if let Some(trigger) = if claimed_wakeup {
+            Some("wakeup".to_string())
+        } else {
+            pending_work_trigger
+        } {
+            turn_context.turn_metadata_state.set_turn_trigger(trigger);
         }
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
@@ -477,6 +487,14 @@ impl Session {
         let task_future = async move {
             let ctx_for_finish = Arc::clone(&ctx);
             let mut task_result = async {
+                // Accounting starts only for a registered owner. Cancellation joins
+                // this future before abort contributors clear its turn state.
+                session.emit_turn_start_lifecycle(
+                    &ctx,
+                    Some(&token_usage_at_turn_start),
+                    codex_extension_api::TurnStartPhase::CommittedTaskStart,
+                ).or_cancel(&task_cancellation_token).await
+                    .map_err(|_| codex_protocol::error::CodexErr::new(CodexErrorDetails::TurnAborted))?;
                 let input = match host_admission {
                     Some(provider) => admission::admit(
                         &session,
@@ -661,9 +679,7 @@ impl Session {
                         .await
                 }
             };
-            if let Some(trigger) = start_options.turn_trigger {
-                turn_context.turn_metadata_state.set_turn_trigger(trigger);
-            }
+            let pending_work_trigger = start_options.turn_trigger;
             if let Some(id) = start_options.parent_turn_id {
                 if let Some(initiating_agent_path) = input
                     .iter()
@@ -709,6 +725,7 @@ impl Session {
                     Vec::new(),
                     RegularTask::new(),
                     Some(Arc::clone(&turn_state)),
+                    pending_work_trigger,
                 )
                 .await
             {

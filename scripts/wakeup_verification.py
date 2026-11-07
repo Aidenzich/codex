@@ -22,6 +22,8 @@ SCENARIOS = {
     "delayed-resume-busy-cancel-shutdown",
     "existing-mail-admission-boundaries",
     "subscriber-close-revokes-wakeups",
+    "retained-wakeup-thread-revert",
+    "abandoned-wakeup-goal-accounting",
     "framework-marker-native-history",
     "typed-marker-published-schema",
     "visible-management-and-turn-feedback",

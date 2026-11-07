@@ -8,10 +8,12 @@ use codex_protocol::protocol::TurnAbortReason;
 
 use crate::ExtensionData;
 
-/// Runs before task registration or during cancellable regular-task startup.
+/// Selects reservation preparation, committed startup, or regular-task startup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TurnStartPhase {
     BeforeTaskRegistration,
+    /// Runs after admission commits, before task work, with a token baseline.
+    CommittedTaskStart,
     RegularTaskStart,
 }
 
@@ -22,8 +24,10 @@ pub struct TurnStartInput<'a> {
     /// Effective collaboration mode for this turn.
     pub collaboration_mode: &'a CollaborationMode,
     /// Total token usage snapshot captured when the turn started.
-    /// Present before task registration; absent during regular-task preparation.
-    /// Token-accounting contributors must remain in `BeforeTaskRegistration`.
+    /// Present during reservation preparation and committed task startup; absent
+    /// during regular-task preparation.
+    /// Token-accounting contributors use `CommittedTaskStart` so abandoned
+    /// admission reservations cannot start accounting.
     pub token_usage_at_turn_start: Option<&'a TokenUsage>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,

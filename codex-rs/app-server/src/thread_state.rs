@@ -785,7 +785,28 @@ impl ThreadStateManager {
         }
     }
 
-    #[cfg(test)]
+    pub(crate) async fn restore_replacement_wakeups(
+        &self,
+        thread_id: ThreadId,
+        thread: &CodexThread,
+        wakeups: codex_core::WakeupReplacement,
+        connections: Option<watch::Receiver<bool>>,
+    ) {
+        // Serialize the watch-version check and installation with last detach.
+        let state = self.state.lock().await;
+        if connections.as_ref().is_some_and(|connections| {
+            matches!(connections.has_changed(), Ok(false)) && *connections.borrow()
+        }) && state.threads.get(&thread_id).is_some_and(|entry| {
+            !entry.connection_ids.is_empty()
+                && entry
+                    .wakeup_thread
+                    .upgrade()
+                    .is_some_and(|current| std::ptr::eq(current.as_ref(), thread))
+        }) {
+            thread.restore_wakeups_after_replacement(wakeups).await;
+        }
+    }
+
     pub(crate) async fn subscribe_to_has_connections(
         &self,
         thread_id: ThreadId,

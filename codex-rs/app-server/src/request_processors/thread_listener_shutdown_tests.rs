@@ -388,3 +388,134 @@ async fn wakeup_actual_subscriber_transitions_revoke_only_after_last_detach(
     test.codex.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[test_case(false; "extra_subscriber_preserves_transfer")]
+#[test_case(true; "last_detach_reattach_revokes_transfer")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wakeup_replacement_obeys_subscriber_lifetime(last_detach: bool) -> Result<()> {
+    use codex_core::TurnInputRequest;
+    use codex_protocol::protocol::{EventMsg, SessionSource};
+    use codex_protocol::user_input::UserInput;
+    use core_test_support::{responses, wait_for_event};
+    use serde_json::json;
+
+    let server = responses::start_mock_server().await;
+    let answer = |id: &str| {
+        responses::sse(vec![
+            responses::ev_assistant_message(id, "done"),
+            responses::ev_completed(id),
+        ])
+    };
+    let mut sequence = vec![
+        responses::sse(vec![
+            responses::ev_function_call_with_namespace(
+                "schedule",
+                "clock",
+                "schedule_wakeup",
+                &json!({"duration_ms":2000,"instruction":"transferred follow-up"}).to_string(),
+            ),
+            responses::ev_completed("scheduled"),
+        ]),
+        answer("initial"),
+        responses::sse(vec![
+            responses::ev_function_call_with_namespace("list", "clock", "list_wakeups", "{}"),
+            responses::ev_completed("listed"),
+        ]),
+        answer("list-answer"),
+    ];
+    if !last_detach {
+        sequence.push(answer("resumed"));
+    }
+    let mock = responses::mount_sse_sequence(&server, sequence).await;
+    let source = test_codex()
+        .with_session_source(SessionSource::VSCode)
+        .build_with_auto_env(&server)
+        .await?;
+    let destination = test_codex()
+        .with_session_source(SessionSource::VSCode)
+        .build_with_auto_env(&server)
+        .await?;
+    let thread_id = source.session_configured.thread_id;
+    let manager = ThreadStateManager::new();
+    let first = ConnectionId(81);
+    let second = ConnectionId(82);
+    for connection in [first, second] {
+        manager
+            .connection_initialized(connection, ConnectionCapabilities::default())
+            .await;
+    }
+    let candidate = manager.created_listener_state(thread_id).await;
+    manager
+        .subscribe_and_install_listener(thread_id, &candidate, &source.codex, &[first], |_| {
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
+        .context("source listener")?;
+    let input = || {
+        TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue".into(),
+            text_elements: vec![],
+        }])
+    };
+    source.codex.start_or_steer_turn(input()).await?;
+    wait_for_event(&source.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let mut connections = manager.subscribe_to_has_connections(thread_id).await;
+    connections.as_mut().unwrap().borrow_and_update();
+    let transfer = source.codex.take_wakeups_for_replacement().await;
+    assert!(!transfer.is_empty());
+    if last_detach {
+        assert!(
+            manager
+                .unsubscribe_connection_from_thread(thread_id, first)
+                .await
+        );
+    }
+    assert!(
+        manager
+            .try_add_connection_to_thread(thread_id, second)
+            .await
+    );
+    manager
+        .subscribe_and_install_listener(
+            thread_id,
+            &candidate,
+            &destination.codex,
+            &[second],
+            |_| Ok::<_, anyhow::Error>(()),
+        )
+        .await?
+        .context("replacement listener")?;
+    manager
+        .restore_replacement_wakeups(thread_id, &destination.codex, transfer, connections)
+        .await;
+    destination.codex.start_or_steer_turn(input()).await?;
+    wait_for_event(&destination.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let listed: serde_json::Value = serde_json::from_str(
+        &mock
+            .function_call_output_text("list")
+            .context("pending read-back")?,
+    )?;
+    assert_eq!(
+        listed["wakeups"].as_array().unwrap().len(),
+        usize::from(!last_detach)
+    );
+    if !last_detach {
+        wait_for_event(&destination.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    } else {
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+    }
+    assert_eq!(mock.requests().len(), if last_detach { 4 } else { 5 });
+    manager.clear_all_listeners().await;
+    source.codex.shutdown_and_wait().await?;
+    destination.codex.shutdown_and_wait().await?;
+    Ok(())
+}

@@ -11,7 +11,8 @@ can keep talking or give it another task while the reminder waits. When it is
 due, the framework starts a normal follow-up turn in the same conversation.
 If another turn is running, it waits for a safe boundary. The follow-up keeps
 the conversation context and uses the current tools, permissions and approval
-policy. A reminder does not grant permission for additional work.
+policy. A reminder does not grant permission for additional work. Automatic
+turns carry the native `wakeup` trigger; the original request remains user-triggered.
 
 ## Tools and management
 
@@ -63,7 +64,11 @@ reminders immediately, even if a shared server keeps the thread loaded briefly.
 This includes closing the CLI and navigation that actually detaches the last
 subscriber. A retained side pane or a second client still subscribed keeps the
 thread alive. Reopening a detached thread does not restore cancelled reminders;
-forks start with an empty reminder registry. Reminders are in memory, not a
+forks start with an empty reminder registry. Editing an earlier prompt in the
+same conversation preserves reminders whose originating turns remain in history,
+including their original IDs and deadlines. Reminders authorized by reverted
+turns are discarded. An overdue retained reminder runs at the next safe boundary
+after the replacement runtime is attached. Reminders are in memory, not a
 persistent scheduler: they do not survive session teardown or process restart.
 
 ## Verification
@@ -78,7 +83,8 @@ native transport for pinned Git sources and recursive submodules; no global Git
 or Cargo configuration is required.
 
 Native Rust tests cover tool/policy contracts, pending-state read-back,
-cancellation, serialized admission, conversation continuity, subscriber cleanup,
+cancellation, serialized admission, conversation continuity, prompt-edit retention,
+failed automatic-turn recovery, balanced goal accounting, subscriber cleanup,
 typed history and TUI presentation. `scripts/wakeup_verification.py` runs one
 explicit native test command and translates its real harness results for Loops.
 It rejects empty selections, failures and ignored required tests, and uses the

@@ -54,6 +54,155 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[tokio::test]
+async fn wakeup_revert_preserves_retained_job_and_discards_reverted_origin() -> Result<()> {
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn call(id: &str, name: &str, arguments: Value) -> String {
+        responses::sse(vec![
+            responses::ev_function_call_with_namespace(id, "clock", name, &arguments.to_string()),
+            responses::ev_completed(id),
+        ])
+    }
+    fn answer(id: &str) -> String {
+        responses::sse(vec![
+            responses::ev_assistant_message(id, id),
+            responses::ev_completed(id),
+        ])
+    }
+    let model = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &model,
+        vec![
+            call(
+                "keep",
+                "schedule_wakeup",
+                json!({"duration_ms":5000,"instruction":"retained ORCHID"}),
+            ),
+            answer("scheduled-a"),
+            call(
+                "discard",
+                "schedule_wakeup",
+                json!({"duration_ms":5000,"instruction":"reverted LOTUS"}),
+            ),
+            answer("scheduled-b"),
+            call("list", "list_wakeups", json!({})),
+            answer("listed"),
+            answer("autonomous"),
+        ],
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&model.uri())
+        .enable_feature(Feature::Sqlite)
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    initialize_experimental(&mut app).await?;
+    let started = app
+        .start_thread(ThreadStartParams {
+            history_mode: Some(ThreadHistoryMode::Paginated),
+            ..Default::default()
+        })
+        .await?;
+    let thread_id = started.thread.id;
+    let input = |text: &str| TurnStartParams {
+        thread_id: thread_id.clone(),
+        input: vec![UserInput::Text {
+            text: text.into(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    };
+    let first = app
+        .start_turn_and_wait_for_completion(input("Schedule retained ORCHID"))
+        .await?;
+    let second = app
+        .start_turn_and_wait_for_completion(input("Schedule reverted LOTUS"))
+        .await?;
+    let _: ThreadRevertResponse = app
+        .request(|request_id| ClientRequest::ThreadRevert {
+            request_id,
+            params: ThreadRevertParams {
+                thread_id: thread_id.clone(),
+                before_turn_id: second.turn.id.clone(),
+            },
+        })
+        .await?;
+    let listed = app
+        .start_turn_and_wait_for_completion(input("List pending wakeups"))
+        .await?;
+    let followup: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(followup.thread_id, thread_id);
+    assert_eq!(followup.turn.status, TurnStatus::Completed);
+    assert!(followup.turn.error.is_none());
+    assert_ne!(followup.turn.id, first.turn.id);
+    assert_ne!(followup.turn.id, second.turn.id);
+    assert_ne!(followup.turn.id, listed.turn.id);
+
+    let requests = mock.requests();
+    let outputs: Vec<Value> = requests
+        .iter()
+        .flat_map(|request| request.body_json()["input"].as_array().unwrap().clone())
+        .filter(|item| item["type"] == "function_call_output")
+        .filter_map(|item| {
+            item["output"]
+                .as_str()
+                .and_then(|text| serde_json::from_str(text).ok())
+        })
+        .collect();
+    let original = outputs
+        .iter()
+        .find(|output| output["instruction"] == "retained ORCHID")
+        .expect("schedule receipt");
+    let pending = outputs
+        .iter()
+        .find_map(|output| output["wakeups"].as_array())
+        .expect("list receipt");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["task_id"], original["task_id"]);
+    assert_eq!(pending[0]["due_at"], original["due_at"]);
+    assert_eq!(pending[0]["originating_turn_id"], first.turn.id);
+    let marker = followup
+        .turn
+        .items
+        .iter()
+        .find_map(|item| match &item.payload {
+            codex_app_server_protocol::ThreadItemPayload::WakeupStarted {
+                task_id,
+                origin_turn_id,
+                resumed_turn_id,
+                instruction,
+                ..
+            } => Some((task_id, origin_turn_id, resumed_turn_id, instruction)),
+            _ => None,
+        })
+        .expect("same-thread native wakeup marker");
+    assert_eq!(marker.0, original["task_id"].as_str().unwrap());
+    assert_eq!(marker.1, &first.turn.id);
+    assert_eq!(marker.2, &followup.turn.id);
+    assert_eq!(marker.3, "retained ORCHID");
+    let body = requests.last().unwrap().body_json().to_string();
+    assert!(body.contains("retained ORCHID"));
+    assert!(!body.contains("reverted LOTUS"));
+    assert!(body.contains(original["task_id"].as_str().unwrap()));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        mock.requests().len(),
+        7,
+        "one autonomous claim, no reverted-origin claim"
+    );
+    app.shutdown_gracefully().await?;
+    Ok(())
+}
+
 #[test_case::test_case(None; "default_paginated")]
 #[test_case::test_case(Some(ThreadHistoryMode::Legacy); "explicit_legacy")]
 #[tokio::test]

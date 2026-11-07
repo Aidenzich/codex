@@ -280,6 +280,10 @@ def main():
             started = events(completed, "task_started")
             assert len(started) == 2 and len(calls(completed, "schedule_wakeup")) == 1
             assert started[0]["payload"]["turn_id"] != started[1]["payload"]["turn_id"]
+            for turn, trigger in zip(started, ("user", "wakeup")):
+                attribution = turn["payload"]["turn_attribution"]
+                assert attribution["turn_id"] == turn["payload"]["turn_id"]
+                assert attribution["turn_trigger"] == trigger, "Native turn cause was misattributed"
             assert datetime.fromisoformat(started[1]["timestamp"].replace("Z", "+00:00")) >= due_millis
             resumed_calls = [r for r in completed if r.get("type") == "response_item"
                              and r.get("payload", {}).get("type") in ("function_call", "custom_tool_call")
@@ -359,6 +363,7 @@ def main():
                         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                         "requested_model": args.model,
                         "observed_models": {c["turn_id"]: c["model"] for c in contexts if c.get("turn_id")},
+                        "turn_attributions": [turn["payload"]["turn_attribution"] for turn in started],
                         "role": "isolated-authorized-user", "fixture": str(fixture),
                         "entry": cli_argv, "server": server_argv, "viewport": [120, 40], "theme": "terminal",
                         "source": meta[0]["source"], "thread_id": meta[0]["id"],
