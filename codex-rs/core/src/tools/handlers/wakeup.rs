@@ -303,7 +303,7 @@ mod invocation_tests {
         turn.initial_environments = Default::default();
         Arc::make_mut(&mut turn.config)
             .permissions
-            .set_legacy_permission_profile(codex_protocol::models::PermissionProfile::Disabled)
+            .set_permission_profile(codex_protocol::models::PermissionProfile::Disabled)
             .unwrap();
         session.tool_policy = Arc::new(codex_extension_api::ToolPolicy {
             require_managed_sandbox: true,
